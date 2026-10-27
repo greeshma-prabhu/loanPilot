@@ -1,6 +1,7 @@
 """Applications list and synthetic case view."""
 
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -20,6 +21,7 @@ from loanpilot.components import (
 )
 from loanpilot.data.queries import (
     get_application,
+    get_agent_trace,
     get_audit_log,
     get_bureau,
     get_customer,
@@ -31,6 +33,7 @@ from loanpilot.data.queries import (
     list_applications,
 )
 from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 
 _PERSONA_STORIES = {
@@ -91,17 +94,6 @@ def _age_in_days(submitted_at: str) -> int:
     return max(0, (datetime.now() - submitted).days)
 
 
-def _score_band(score: Any) -> str:
-    """Map a synthetic bureau score to an illustrative risk-band label."""
-    if pd.isna(score):
-        return "—"
-    if score >= 750:
-        return "Low"
-    if score >= 700:
-        return "Medium"
-    return "Elevated"
-
-
 def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
     """Create the requested display columns from application query results."""
     if applications.empty:
@@ -126,7 +118,7 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
             "Amount": applications["requested_amount"].map(fmt_inr),
             "Stage": applications["stage"],
             "AI recommendation": applications["ai_recommendation"].fillna("—"),
-            "Risk band": applications["bureau_score"].map(_score_band),
+            "Risk band": applications["risk_band"].fillna("—"),
             "Owner": applications["owner"].fillna("—"),
             "Age (days)": applications["submitted_at"].map(_age_in_days),
         }
@@ -460,6 +452,51 @@ def _render_audit(application_id: str, store: SQLiteStore) -> None:
         st.dataframe(audit, width="stretch", hide_index=True)
 
 
+def _render_agent_trace(application_id: str, store: SQLiteStore) -> None:
+    """Render the latest saved assessment trace for the current case."""
+    trace = get_agent_trace(application_id, store=store)
+    if trace.empty:
+        st.info("No AI assessment has been run for this case yet. Built in phase 4.")
+        return
+    for _, step in trace.iterrows():
+        with st.expander(
+            f"{int(step['step_no'])}. {step['agent']} · "
+            f"{int(step['duration_ms'])} ms · {step['mode']}"
+        ):
+            payload = json.loads(step["tool_calls_json"])
+            for call in payload.get("calls", []):
+                st.markdown(f"**{call['name']}**")
+                st.caption("Inputs")
+                st.json(call.get("inputs", {}))
+                st.caption("Outputs")
+                st.json(call.get("outputs", {}))
+            st.markdown(f"**Handoff:** {step['handoff']}")
+
+
+def _render_decision(application: pd.Series) -> None:
+    """Show the AI recommendation while retaining the human decision placeholder."""
+    recommendation = application.get("ai_recommendation")
+    if recommendation is None or pd.isna(recommendation):
+        st.info("No AI recommendation is recorded yet. Built in phase 4.")
+    else:
+        st.markdown(f"### AI recommendation: {recommendation}")
+        reasons_json = application.get("ai_reasons_json")
+        reasons = json.loads(reasons_json) if reasons_json else {}
+        risk_band = reasons.get("risk_band")
+        if risk_band:
+            st.write(f"Risk band: **{risk_band}**")
+        if reasons.get("explanation"):
+            st.write(reasons["explanation"])
+        if reasons.get("reasons_against"):
+            st.markdown("**Reasons for referral / decline**")
+            for reason in reasons["reasons_against"][:4]:
+                st.write(
+                    f"- **{reason.get('clause_id', 'Source')}** · "
+                    f"{reason.get('text', '')}"
+                )
+    st.info("Human review and any override rationale will appear here. Built in phase 5.")
+
+
 def _render_case(application_id: str, store: SQLiteStore) -> None:
     """Render the full case view across summary and data-source tabs."""
     result = get_application(application_id, store)
@@ -517,9 +554,9 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     with tabs[3]:
         _render_checks(application_id, loans, repayment, store)
     with tabs[4]:
-        st.info("The AI assessment trace and evidence summary will appear here. Built in phase 4.")
+        _render_agent_trace(application_id, store)
     with tabs[5]:
-        st.info("Human review, final decision, and any override rationale will appear here. Built in phase 5.")
+        _render_decision(application)
     with tabs[6]:
         st.info("Human sanction approval and simulated disbursement details will appear here. Built in phase 5.")
     with tabs[7]:
@@ -529,6 +566,7 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
 def render(store: SQLiteStore | None = None) -> None:
     """Render the applications list or its selected application case."""
     store = store or SQLiteStore()
+    create_schema(store)
     counts = store.table_counts()
     if counts.get("cur_applications", 0) == 0:
         _render_empty_state(store)

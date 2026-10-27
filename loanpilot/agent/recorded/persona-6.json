@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 84960.0,
+      "deductions": 12960.0,
+      "net": 72000.0,
+      "employer": "Western Financial Services",
+      "salary_credits_avg": 72000.0
+    },
+    "anomaly_description": "Income documents reconcile. The applicant has only five months with the current employer and a long previous employment history."
+  },
+  "recommendation": {
+    "explanation": "The illustrative current-employer minimum in CP-2.3 is not met. The long prior relationship and experience are noted as context, but do not alter this deterministic policy result. Human review is required."
+  }
+}

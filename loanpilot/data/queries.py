@@ -1,6 +1,7 @@
 """Parameterized SQL queries used by the applications list and case view."""
 
 import json
+from datetime import datetime
 from typing import Any, Mapping
 
 import pandas as pd
@@ -46,6 +47,7 @@ def list_applications(
                a.stage,
                a.persona_key,
                d.ai_recommendation,
+               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band,
                d.decided_by AS owner,
                f.bureau_score
         FROM cur_applications a
@@ -203,4 +205,185 @@ def get_audit_log(
         ORDER BY ts DESC, event_id DESC
         """,
         (application_id,),
+    )
+
+
+def count_agent_audit_events(
+    application_id: str,
+    store: SQLiteStore | None = None,
+) -> int:
+    """Count audit events written by assessment agents for one application."""
+    result = _store(store).query(
+        """
+        SELECT COUNT(*) AS event_count
+        FROM cur_audit_log
+        WHERE application_id = ? AND actor LIKE ?
+        """,
+        (application_id, "%Agent%"),
+    )
+    return int(result.iloc[0]["event_count"])
+
+
+def get_agent_trace(
+    application_id: str,
+    run_id: str | None = None,
+    store: SQLiteStore | None = None,
+) -> pd.DataFrame:
+    """Fetch the newest assessment trace, optionally for a specific run."""
+    if run_id is None:
+        return _store(store).query(
+            """
+            SELECT application_id, run_id, step_no, agent, tool_calls_json,
+                   started_at, duration_ms, mode, handoff
+            FROM cur_agent_trace
+            WHERE application_id = ?
+              AND run_id = (
+                  SELECT run_id FROM cur_agent_trace
+                  WHERE application_id = ?
+                  ORDER BY started_at DESC, step_no DESC LIMIT 1
+              )
+            ORDER BY step_no
+            """,
+            (application_id, application_id),
+        )
+    return _store(store).query(
+        """
+        SELECT application_id, run_id, step_no, agent, tool_calls_json,
+               started_at, duration_ms, mode, handoff
+        FROM cur_agent_trace
+        WHERE application_id = ? AND run_id = ?
+        ORDER BY step_no
+        """,
+        (application_id, run_id),
+    )
+
+
+def save_agent_trace_step(
+    application_id: str,
+    run_id: str,
+    step_no: int,
+    agent: str,
+    tool_calls_json: str,
+    started_at: str,
+    duration_ms: int,
+    mode: str,
+    handoff: str,
+    store: SQLiteStore | None = None,
+) -> None:
+    """Persist one orchestrator step trace."""
+    _store(store).execute(
+        """
+        INSERT INTO cur_agent_trace
+            (application_id, run_id, step_no, agent, tool_calls_json,
+             started_at, duration_ms, mode, handoff)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            application_id,
+            run_id,
+            step_no,
+            agent,
+            tool_calls_json,
+            started_at,
+            duration_ms,
+            mode,
+            handoff,
+        ),
+    )
+
+
+def save_assessment_decision(
+    application_id: str,
+    recommendation: str,
+    reasons_json: str,
+    decided_at: str,
+    store: SQLiteStore | None = None,
+) -> None:
+    """Persist AI recommendation and move the application to human review."""
+    database = _store(store)
+    database.execute(
+        """
+        INSERT INTO cur_decisions
+            (application_id, ai_recommendation, ai_reasons_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(application_id) DO UPDATE SET
+            ai_recommendation = excluded.ai_recommendation,
+            ai_reasons_json = excluded.ai_reasons_json
+        """,
+        (application_id, recommendation, reasons_json),
+    )
+    database.execute(
+        "UPDATE cur_applications SET stage = ? WHERE application_id = ?",
+        ("Human Review", application_id),
+    )
+    append_audit_event(
+        application_id,
+        decided_at,
+        "LoanPilot Orchestrator",
+        "AI recommendation recorded",
+        f"Recommendation: {recommendation}; handoff to Human Review",
+        store=database,
+    )
+
+
+def append_audit_event(
+    application_id: str,
+    timestamp: str,
+    actor: str,
+    action: str,
+    detail: str,
+    store: SQLiteStore | None = None,
+) -> None:
+    """Append one auditable action with a unique event identifier."""
+    _store(store).execute(
+        """
+        INSERT INTO cur_audit_log (event_id, application_id, ts, actor, action, detail)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"AGENT-{application_id}-{datetime.now().timestamp():.6f}",
+            application_id,
+            timestamp,
+            actor,
+            action,
+            detail,
+        ),
+    )
+
+
+def get_llm_cache(
+    application_id: str,
+    step: str,
+    store: SQLiteStore | None = None,
+) -> pd.DataFrame:
+    """Fetch cached language-model output for an application step."""
+    return _store(store).query(
+        """
+        SELECT application_id, step, mode, response_json, cached_at
+        FROM cur_llm_cache
+        WHERE application_id = ? AND step = ?
+        """,
+        (application_id, step),
+    )
+
+
+def save_llm_cache(
+    application_id: str,
+    step: str,
+    mode: str,
+    response_json: str,
+    cached_at: str,
+    store: SQLiteStore | None = None,
+) -> None:
+    """Cache language-model output per application and named step."""
+    _store(store).execute(
+        """
+        INSERT INTO cur_llm_cache (application_id, step, mode, response_json, cached_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(application_id, step) DO UPDATE SET
+            mode = excluded.mode,
+            response_json = excluded.response_json,
+            cached_at = excluded.cached_at
+        """,
+        (application_id, step, mode, response_json, cached_at),
     )

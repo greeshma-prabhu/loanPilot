@@ -3,3 +3,4 @@ pandas
 plotly
 pytest
 fpdf2
+google-genai

@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 70800.0,
+      "deductions": 10800.0,
+      "net": 60000.0,
+      "employer": "Western Operations Services",
+      "salary_credits_avg": 56400.0
+    },
+    "anomaly_description": "Salary credits are six percent below payslip net, within the illustrative tolerance; bureau history shows an older 30-day late payment."
+  },
+  "recommendation": {
+    "explanation": "The stated FOIR is in the policy referral band and the synthetic bureau record includes one older 30-day late payment. Refer for human review; no sanction is made by AI."
+  }
+}

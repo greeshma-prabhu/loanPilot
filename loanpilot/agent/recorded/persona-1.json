@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 112100.0,
+      "deductions": 17100.0,
+      "net": 95000.0,
+      "employer": "Aarambh Technologies",
+      "salary_credits_avg": 95000.0
+    },
+    "anomaly_description": "The payslip arithmetic, employer record, and six monthly salary credits are consistent in this synthetic sample."
+  },
+  "recommendation": {
+    "explanation": "The synthetic profile meets the illustrative income, employment, FOIR, bureau, identity, and document checks. A human reviewer must still approve any sanction."
+  }
+}

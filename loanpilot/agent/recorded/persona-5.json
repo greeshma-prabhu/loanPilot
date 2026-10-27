@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 44840.0,
+      "deductions": 6840.0,
+      "net": 38000.0,
+      "employer": "Coastal Analytics",
+      "salary_credits_avg": 38000.0
+    },
+    "anomaly_description": "Income documents are consistent. The synthetic bureau payload indicates a thin file with no score."
+  },
+  "recommendation": {
+    "explanation": "The bureau response has no history. CP-5.4 requires referral and caps the illustrative amount at Rs 75,000. The requested amount is Rs 100,000, so a human reviewer must assess the referral."
+  }
+}

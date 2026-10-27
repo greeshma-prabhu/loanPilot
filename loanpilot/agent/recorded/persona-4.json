@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 100000.0,
+      "deductions": 15000.0,
+      "net": 82000.0,
+      "employer": "Aarambh Tech Solutions Private Limited",
+      "salary_credits_avg": 54120.0
+    },
+    "anomaly_description": "The payslip gross less deductions does not equal net, employer wording differs from the customer record, and salary credits are about 34 percent below payslip net."
+  },
+  "recommendation": {
+    "explanation": "Document inconsistencies fail the illustrative reconciliation checks. Stated-income FOIR is 40.9 percent while FOIR using the observed average salary credit is about 62 percent. Refer for document review; a human reviewer decides next steps."
+  }
+}

@@ -1,7 +1,8 @@
 # LoanPilot: Agentic Personal Loan Approval
 
-A Streamlit presales point-of-view demo for Aarambh Bank. This shell contains
-placeholder pages only and uses no real customer data or credit decisions.
+A Streamlit presales point-of-view demo for Aarambh Bank. It uses synthetic
+customer data and illustrative policy only; it is not a real bank system or
+credit decision.
 
 ## Run locally
 
@@ -17,5 +18,11 @@ all demo identities and documents are synthetic and are not credit decisions.
 
 Generate or replace the dataset from the command line with
 `python -m loanpilot.data.seed --reset`.
+
+The AI Assessment page runs deterministic policy checks and hands every
+recommendation to Human Review. Without a `GEMINI_API_KEY`, language output uses
+the recorded persona traces; set the key in `.streamlit/secrets.toml` or the
+environment to enable Live Gemini. Export replay data created by live assessments
+with `python -m loanpilot.agent.record`.
 
 Run the test suite with `pytest`.

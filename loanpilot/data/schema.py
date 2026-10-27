@@ -116,8 +116,32 @@ CREATE TABLE IF NOT EXISTS cur_audit_log (
     detail TEXT NOT NULL,
     FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
 );
+CREATE TABLE IF NOT EXISTS cur_agent_trace (
+    application_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    step_no INTEGER NOT NULL,
+    agent TEXT NOT NULL,
+    tool_calls_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    handoff TEXT NOT NULL,
+    PRIMARY KEY (application_id, run_id, step_no),
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
+CREATE TABLE IF NOT EXISTS cur_llm_cache (
+    application_id TEXT NOT NULL,
+    step TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    cached_at TEXT NOT NULL,
+    PRIMARY KEY (application_id, step),
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
 CREATE INDEX IF NOT EXISTS idx_cur_applications_customer
     ON cur_applications(customer_id);
+CREATE INDEX IF NOT EXISTS idx_cur_agent_trace_run
+    ON cur_agent_trace(application_id, run_id, step_no);
 CREATE INDEX IF NOT EXISTS idx_cur_existing_loans_customer
     ON cur_existing_loans(customer_id);
 CREATE INDEX IF NOT EXISTS idx_cur_repayments_due_month

@@ -20,7 +20,7 @@
       "clause_id": "CP-2.3",
       "title": "Employment experience",
       "text": "Applicants need at least 6 months with their current employer and 12 months of total work experience.",
-      "criteria": {"current_employer_months_min": 6, "total_experience_months_min": 12}
+      "criteria": {"current_employer_months_min": 6, "total_experience_months_min": 12, "failure_status": "decline"}
     },
     {
       "clause_id": "CP-3.1",

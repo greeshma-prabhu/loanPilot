@@ -1,0 +1,15 @@
+{
+  "document_verification": {
+    "extracted_fields": {
+      "gross": 53100.0,
+      "deductions": 8100.0,
+      "net": 45000.0,
+      "employer": "Deccan Sales Network",
+      "salary_credits_avg": 45000.0
+    },
+    "anomaly_description": "The synthetic payslip and salary-credit records reconcile."
+  },
+  "recommendation": {
+    "explanation": "The stated fixed-obligation ratio exceeds the illustrative 50 percent decline boundary under CP-4.1. The deterministic policy outcome is Decline."
+  }
+}

@@ -4,7 +4,7 @@ import re
 import unicodedata
 from typing import Any
 
-from loanpilot.agent.llm import RECORDED_MODE, run_json_step
+from loanpilot.agent.llm import LIVE_MODE, run_json_step
 from loanpilot.agent.policy_engine import (
     evaluate_policy,
     max_affordable_amount,
@@ -180,7 +180,7 @@ def extract_document_fields(
         "anomaly_description": str(anomalies),
         "extraction_method": (
             "Gemini JSON"
-            if source_matches and mode != RECORDED_MODE
+            if source_matches and mode == LIVE_MODE
             else "Recorded fields"
             if source_matches
             else "Regex fallback"

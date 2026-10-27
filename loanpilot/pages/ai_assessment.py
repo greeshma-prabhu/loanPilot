@@ -17,6 +17,7 @@ from loanpilot.data.queries import (
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
+from loanpilot.theme import render_disclaimer, render_header
 
 _PIPELINE = [
     "Document Verification",
@@ -111,9 +112,9 @@ def _result_mode(result: dict[str, Any]) -> str:
     llm_modes = dict.fromkeys(
         mode
         for mode in result.get("modes", [])
-        if mode in ("Live Gemini", "Recorded trace")
+        if mode == "Live Gemini" or mode.startswith("Recorded (")
     )
-    return " + ".join(llm_modes) if llm_modes else "Recorded trace"
+    return " + ".join(llm_modes) if llm_modes else "Recorded (pre-written sample)"
 
 
 def _render_pipeline(complete: bool) -> None:
@@ -122,9 +123,14 @@ def _render_pipeline(complete: bool) -> None:
     for index, (column, step) in enumerate(zip(columns, _PIPELINE, strict=True)):
         state = "Done" if complete else ("Ready" if index == 0 else "Upcoming")
         icon = "✓" if complete else ("○" if index else "●")
+        style = "is-done" if complete else ("is-ready" if index == 0 else "")
         with column:
-            st.markdown(f"**{icon} {state}**")
-            st.caption(step)
+            st.markdown(
+                f'<div class="lp-pipeline-card {style}">'
+                f'<div class="lp-pipeline-state">{icon} {state}</div>'
+                f'<div class="lp-pipeline-label">{step}</div></div>',
+                unsafe_allow_html=True,
+            )
 
 
 def _render_timeline(result: dict[str, Any]) -> None:
@@ -260,10 +266,14 @@ def _render_assessment(result: dict[str, Any]) -> None:
 
 def render(store: SQLiteStore | None = None) -> None:
     """Render the assessment selector, run action, and persisted assessment."""
+    render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
-    st.title("AI Assessment")
-    st.caption("Run the deterministic five-step assessment; language generation never controls the outcome.")
+    render_header(
+        "AI Assessment",
+        "A transparent five-step workflow: deterministic policy and calculations, with language support kept in its lane.",
+        "OPERATE  /  ASSESSMENT PIPELINE",
+    )
     applications = list_applications(store=store)
     if applications.empty:
         st.info("No demo applications are loaded yet. Load the synthetic sample dataset to begin.")

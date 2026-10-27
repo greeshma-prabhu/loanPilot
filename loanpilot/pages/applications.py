@@ -25,16 +25,19 @@ from loanpilot.data.queries import (
     get_audit_log,
     get_bureau,
     get_customer,
+    get_disbursement,
     get_documents,
     get_existing_loans,
     get_kyc,
     get_repayment_summary,
+    get_sanction,
     get_transactions,
     list_applications,
 )
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
+from loanpilot.theme import render_disclaimer, render_header
 
 _PERSONA_STORIES = {
     "PERSONA-1": "Clean approve: consistent income and documents, strong bureau profile.",
@@ -105,6 +108,7 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
                 "Amount",
                 "Stage",
                 "AI recommendation",
+                "Human decision",
                 "Risk band",
                 "Owner",
                 "Age (days)",
@@ -118,6 +122,7 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
             "Amount": applications["requested_amount"].map(fmt_inr),
             "Stage": applications["stage"],
             "AI recommendation": applications["ai_recommendation"].fillna("—"),
+            "Human decision": applications["human_decision"].fillna("—"),
             "Risk band": applications["risk_band"].fillna("—"),
             "Owner": applications["owner"].fillna("—"),
             "Age (days)": applications["submitted_at"].map(_age_in_days),
@@ -127,7 +132,7 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
 
 def _render_empty_state(store: SQLiteStore) -> None:
     """Show an actionable empty database state."""
-    st.title("Applications")
+    render_header("Applications", "Explore the synthetic personal-loan portfolio.")
     st.info("No demo applications are loaded yet. Load the synthetic sample dataset to begin.")
     st.button("Load demo data", on_click=_load_data, args=(store,), key="load_applications_data")
 
@@ -143,25 +148,29 @@ def _render_demo_cards(rows: pd.DataFrame) -> None:
         for column, (_, row) in zip(columns, row_group.iterrows()):
             persona_key = row["persona_key"]
             with column:
-                st.markdown(
-                    f"**{row['applicant']}** · `{row['application_id']}` "
-                    f"{status_chip('Demo case', 'demo')}",
-                    unsafe_allow_html=True,
-                )
-                st.caption(_PERSONA_STORIES[persona_key])
-                st.button(
-                    f"Open {row['applicant']} case",
-                    key=f"open_{row['application_id']}",
-                    on_click=_select_application,
-                    args=(row["application_id"],),
-                    width="stretch",
-                )
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{row['applicant']}** · `{row['application_id']}` "
+                        f"{status_chip('Demo case', 'demo')}",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(_PERSONA_STORIES[persona_key])
+                    st.button(
+                        f"Open {row['applicant']} case",
+                        key=f"open_{row['application_id']}",
+                        on_click=_select_application,
+                        args=(row["application_id"],),
+                        width="stretch",
+                    )
 
 
 def _render_applications_list(store: SQLiteStore) -> None:
     """Render filters, counts, pinned personas, and the historical table."""
-    st.title("Applications")
-    st.caption("Browse the synthetic personal-loan queue and open an application case.")
+    render_header(
+        "Applications",
+        "Browse the synthetic personal-loan queue, spot priority cases, and open a case workspace.",
+        "OPERATE  /  PORTFOLIO",
+    )
     all_rows = list_applications(store=store)
     if all_rows.empty:
         _render_empty_state(store)
@@ -474,27 +483,164 @@ def _render_agent_trace(application_id: str, store: SQLiteStore) -> None:
 
 
 def _render_decision(application: pd.Series) -> None:
-    """Show the AI recommendation while retaining the human decision placeholder."""
+    """Compare the AI recommendation with the recorded human outcome."""
     recommendation = application.get("ai_recommendation")
-    if recommendation is None or pd.isna(recommendation):
-        st.info("No AI recommendation is recorded yet. Built in phase 4.")
-    else:
-        st.markdown(f"### AI recommendation: {recommendation}")
-        reasons_json = application.get("ai_reasons_json")
-        reasons = json.loads(reasons_json) if reasons_json else {}
-        risk_band = reasons.get("risk_band")
-        if risk_band:
-            st.write(f"Risk band: **{risk_band}**")
-        if reasons.get("explanation"):
-            st.write(reasons["explanation"])
-        if reasons.get("reasons_against"):
-            st.markdown("**Reasons for referral / decline**")
-            for reason in reasons["reasons_against"][:4]:
-                st.write(
-                    f"- **{reason.get('clause_id', 'Source')}** · "
-                    f"{reason.get('text', '')}"
+    reasons_json = application.get("ai_reasons_json")
+    reasons = json.loads(reasons_json) if reasons_json else {}
+    left, right = st.columns(2)
+    with left:
+        st.markdown("#### AI assessment")
+        st.write(f"Recommendation: **{recommendation or 'Not run'}**")
+        if reasons.get("risk_band"):
+            st.write(f"Risk band: **{reasons['risk_band']}**")
+        st.write(reasons.get("explanation", "No AI explanation is available."))
+        st.caption(
+            f"Explanation mode: {reasons.get('explanation_mode', 'Not available')}"
+        )
+    with right:
+        st.markdown("#### Human decision")
+        human_decision = application.get("human_decision")
+        st.write(f"Decision: **{human_decision or 'Pending'}**")
+        st.write(f"Reviewer: {application.get('decided_by') or '—'}")
+        st.write(f"Decided at: {application.get('decided_at') or '—'}")
+        st.write(f"Override: **{'Yes' if application.get('is_override') else 'No'}**")
+        st.write(application.get("human_reason") or "No human decision has been recorded.")
+        if application.get("is_override"):
+            st.warning("Human decision differs from the AI recommendation (CP-8.2).")
+
+
+def _disbursement_callback(
+    application_id: str,
+    conditions: list[dict[str, Any]],
+    store: SQLiteStore,
+) -> None:
+    """Persist the checklist and create a simulated disbursement."""
+    from loanpilot.agent.sanction import run_simulated_disbursement, update_conditions
+
+    updated = [
+        {
+            **item,
+            "complete": bool(
+                st.session_state.get(
+                    f"sanction_condition_{application_id}_{index}", False
                 )
-    st.info("Human review and any override rationale will appear here. Built in phase 5.")
+            ),
+        }
+        for index, item in enumerate(conditions)
+    ]
+    try:
+        update_conditions(
+            application_id,
+            updated,
+            "Aarav Kulkarni (Credit Analyst)",
+            store,
+        )
+        result = run_simulated_disbursement(application_id, store)
+    except ValueError as error:
+        st.session_state["disbursement_error"] = str(error)
+        return
+    st.session_state["disbursement_success"] = result
+
+
+def _render_sanction(application_id: str, store: SQLiteStore) -> None:
+    """Render the sanction letter, KFS preview, conditions, and simulated payout."""
+    simulated_badge = implementation_badge("simulated")
+    sanction_rows = get_sanction(application_id, store)
+    if sanction_rows.empty:
+        st.info("No human sanction has been issued for this case.")
+        return
+    sanction = sanction_rows.iloc[0]
+    st.markdown(f"### Sanction {simulated_badge}", unsafe_allow_html=True)
+    st.write(f"Reference: **{sanction['sanction_ref']}**")
+    st.write(
+        f"Approved amount: **{fmt_inr(sanction['approved_amount'])}** · "
+        f"Tenure: **{int(sanction['tenure_months'])} months** · "
+        f"Rate: **{float(sanction['rate']):.2%}** · EMI: **{fmt_inr(sanction['emi'])}**"
+    )
+    letter_path = (config.PROJECT_ROOT / Path(sanction["letter_path"])).resolve()
+    if letter_path.is_relative_to(config.PROJECT_ROOT.resolve()) and letter_path.is_file():
+        st.download_button(
+            "Download sanction letter",
+            data=letter_path.read_bytes(),
+            file_name=letter_path.name,
+            mime="application/pdf",
+            key=f"download_sanction_{application_id}",
+            width="stretch",
+        )
+    else:
+        st.warning("The sanction letter file is unavailable.")
+
+    kfs = json.loads(sanction["kfs_json"])
+    st.markdown(f"### Key Fact Statement preview {simulated_badge}", unsafe_allow_html=True)
+    st.warning(kfs["label"])
+    kfs_columns = st.columns(4)
+    for column, (label, value) in zip(
+        kfs_columns,
+        (
+            ("Amount", fmt_inr(kfs["loan_amount"])),
+            ("Annual rate", f"{kfs['annual_rate']:.2%}"),
+            ("APR estimate", f"{kfs['apr']:.2%}"),
+            ("Monthly EMI", fmt_inr(kfs["emi"])),
+            ("Tenure", f"{kfs['tenure_months']} months"),
+            ("Processing fee", fmt_inr(kfs["processing_fee"])),
+            ("Total interest", fmt_inr(kfs["total_interest"])),
+            ("Total payable", fmt_inr(kfs["total_amount_payable"])),
+        ),
+    ):
+        column.metric(label, value)
+    st.write("**Repayment schedule summary**")
+    st.write(
+        f"{kfs['repayment_schedule_summary']['installments']} monthly instalments of "
+        f"approximately {fmt_inr(kfs['repayment_schedule_summary']['monthly_installment'])}."
+    )
+    st.write(f"**Grievance contact:** {kfs['grievance_contact']}")
+    st.caption(kfs["cooling_off_note"])
+
+    conditions = json.loads(sanction["conditions_json"])
+    st.markdown(f"### Conditions before disbursement {simulated_badge}", unsafe_allow_html=True)
+    for index, item in enumerate(conditions):
+        st.checkbox(
+            item["name"],
+            value=bool(item.get("complete", False)),
+            key=f"sanction_condition_{application_id}_{index}",
+        )
+    all_complete = all(
+        st.session_state.get(
+            f"sanction_condition_{application_id}_{index}",
+            item.get("complete", False),
+        )
+        for index, item in enumerate(conditions)
+    )
+    disbursement = get_disbursement(application_id, store)
+    existing_error = st.session_state.pop("disbursement_error", None)
+    if existing_error:
+        st.error(existing_error)
+    if not disbursement.empty:
+        record = disbursement.iloc[0]
+        st.markdown(f"### Disbursement {simulated_badge}", unsafe_allow_html=True)
+        st.write(f"Reference: **{record['disbursement_ref']}**")
+        st.write(
+            f"Gross: {fmt_inr(record['gross_amount'])} · Fees: {fmt_inr(record['fees'])} · "
+            f"Net credited (simulated): **{fmt_inr(record['net_amount'])}**"
+        )
+        st.write(f"Date: {record['disbursed_at']} · Mode: **{record['mode']}**")
+    else:
+        st.button(
+            "Run simulated disbursement",
+            disabled=not all_complete,
+            on_click=_disbursement_callback,
+            args=(application_id, conditions, store),
+            key=f"run_disbursement_{application_id}",
+            width="stretch",
+        )
+        if not all_complete:
+            st.caption("Complete every required condition to enable simulated disbursement.")
+    success = st.session_state.pop("disbursement_success", None)
+    if success and success["application_id"] == application_id:
+        st.success(
+            f"Simulated disbursement created: {success['disbursement_ref']} · "
+            f"net {fmt_inr(success['net_amount'])}"
+        )
 
 
 def _render_case(application_id: str, store: SQLiteStore) -> None:
@@ -516,6 +662,11 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     loans = get_existing_loans(application["customer_id"], store)
     repayment = get_repayment_summary(application["customer_id"], store).iloc[0]
 
+    render_header(
+        "Case workspace",
+        f"{application['name']} · {application_id} · {application['stage']}",
+        "OPERATE  /  CASE FILE",
+    )
     back_column, assessment_column = st.columns([1, 1])
     with back_column:
         st.button(
@@ -558,13 +709,14 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     with tabs[5]:
         _render_decision(application)
     with tabs[6]:
-        st.info("Human sanction approval and simulated disbursement details will appear here. Built in phase 5.")
+        _render_sanction(application_id, store)
     with tabs[7]:
         _render_audit(application_id, store)
 
 
 def render(store: SQLiteStore | None = None) -> None:
     """Render the applications list or its selected application case."""
+    render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
     counts = store.table_counts()

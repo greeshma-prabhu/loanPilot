@@ -3,6 +3,7 @@
 import json
 import logging
 from pathlib import Path
+from datetime import date
 
 from loanpilot.config import AGENT_RECORDED_DIR
 from loanpilot.data.queries import get_llm_cache
@@ -31,6 +32,7 @@ def export_recorded_traces(store: SQLiteStore | None = None) -> dict[str, Path]:
             replay[step] = payload
         if len(replay) != len(REPLAY_STEPS):
             continue
+        replay["generated_by"] = f"live run {date.today().isoformat()}"
         destination = Path(AGENT_RECORDED_DIR) / f"{persona_key.lower()}.json"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(

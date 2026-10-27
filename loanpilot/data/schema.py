@@ -138,6 +138,29 @@ CREATE TABLE IF NOT EXISTS cur_llm_cache (
     PRIMARY KEY (application_id, step),
     FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
 );
+CREATE TABLE IF NOT EXISTS cur_sanctions (
+    application_id TEXT PRIMARY KEY,
+    sanction_ref TEXT NOT NULL UNIQUE,
+    approved_amount REAL NOT NULL,
+    tenure_months INTEGER NOT NULL,
+    rate REAL NOT NULL,
+    emi REAL NOT NULL,
+    conditions_json TEXT NOT NULL,
+    letter_path TEXT NOT NULL,
+    kfs_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
+CREATE TABLE IF NOT EXISTS cur_disbursements (
+    application_id TEXT PRIMARY KEY,
+    disbursement_ref TEXT NOT NULL UNIQUE,
+    gross_amount REAL NOT NULL,
+    fees REAL NOT NULL,
+    net_amount REAL NOT NULL,
+    disbursed_at TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode = 'simulated'),
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
 CREATE INDEX IF NOT EXISTS idx_cur_applications_customer
     ON cur_applications(customer_id);
 CREATE INDEX IF NOT EXISTS idx_cur_agent_trace_run

@@ -15,7 +15,14 @@ from loanpilot.data.store import SQLiteStore
 
 LOGGER = logging.getLogger(__name__)
 LIVE_MODE = "Live Gemini"
-RECORDED_MODE = "Recorded trace"
+RECORDED_MODE = "Recorded (pre-written sample)"
+
+
+def recorded_mode_label(generated_by: str | None) -> str:
+    """Describe whether a replay was authored as a sample or captured live."""
+    if generated_by and generated_by.casefold().startswith("live run "):
+        return f"Recorded ({generated_by})"
+    return RECORDED_MODE
 
 
 class InvalidLLMJSON(ValueError):
@@ -90,7 +97,12 @@ def run_json_step(
         try:
             response = json.loads(row["response_json"])
             if isinstance(response, dict) and not response.get("_fallback"):
-                return response, row["mode"]
+                mode = row["mode"]
+                if mode == "Recorded trace":
+                    mode = recorded_mode_label(
+                        _recorded_payload(persona_key).get("generated_by")
+                    )
+                return response, mode
             return None, RECORDED_MODE
         except (json.JSONDecodeError, TypeError) as error:
             LOGGER.warning("Discarding invalid cached response for %s/%s: %s", application_id, step, error)
@@ -115,8 +127,11 @@ def run_json_step(
 
     recorded = _recorded_payload(persona_key).get(step)
     if isinstance(recorded, dict):
-        _save(application_id, step, RECORDED_MODE, recorded, store)
-        return recorded, RECORDED_MODE
+        mode = recorded_mode_label(
+            _recorded_payload(persona_key).get("generated_by")
+        )
+        _save(application_id, step, mode, recorded, store)
+        return recorded, mode
     _save(application_id, step, RECORDED_MODE, {"_fallback": True}, store)
     return None, RECORDED_MODE
 

@@ -1,0 +1,115 @@
+{
+  "policy_name": "Aarambh Bank Illustrative Personal Loan Demo Policy",
+  "version": "demo-v1",
+  "authority": "Fictional bank policy for a synthetic presales demonstration; not a real bank policy.",
+  "product": "Unsecured salaried personal loan",
+  "clauses": [
+    {
+      "clause_id": "CP-2.1",
+      "title": "Age and maturity",
+      "text": "Applicants must be 21 to 58 years old at application, and the loan must mature no later than the applicant's 60th birthday.",
+      "criteria": {"age_at_application": {"min": 21, "max": 58}, "age_at_maturity_max": 60}
+    },
+    {
+      "clause_id": "CP-2.2",
+      "title": "Minimum net income",
+      "text": "The applicant's verified net monthly income must be at least Rs 25,000.",
+      "criteria": {"net_monthly_income_min": 25000, "currency": "INR"}
+    },
+    {
+      "clause_id": "CP-2.3",
+      "title": "Employment experience",
+      "text": "Applicants need at least 6 months with their current employer and 12 months of total work experience.",
+      "criteria": {"current_employer_months_min": 6, "total_experience_months_min": 12}
+    },
+    {
+      "clause_id": "CP-3.1",
+      "title": "Amount limits",
+      "text": "The requested amount must be Rs 50,000 to Rs 15,00,000 and cannot exceed 15 times verified net monthly income.",
+      "criteria": {"amount_min": 50000, "amount_max": 1500000, "income_multiple_max": 15, "currency": "INR"}
+    },
+    {
+      "clause_id": "CP-3.2",
+      "title": "Tenure limits",
+      "text": "The requested loan tenure must be between 12 and 60 months.",
+      "criteria": {"tenure_months_min": 12, "tenure_months_max": 60}
+    },
+    {
+      "clause_id": "CP-4.1",
+      "title": "Fixed-obligation-to-income ratio",
+      "text": "FOIR up to 45% passes this check; above 45% through 50% is referred for review; above 50% is declined.",
+      "criteria": {"foir_pass_max": 0.45, "foir_refer_max": 0.50, "above_refer": "decline"}
+    },
+    {
+      "clause_id": "CP-5.1",
+      "title": "Bureau score bands",
+      "text": "A score of 750 or more is low-risk pass; 700 to 749 is medium-risk pass; 650 to 699 is referred; below 650 is declined.",
+      "criteria": {"pass_low_risk_min": 750, "pass_medium_risk_min": 700, "refer_min": 650, "below_refer": "decline"}
+    },
+    {
+      "clause_id": "CP-5.2",
+      "title": "Severe delinquency",
+      "text": "Any payment more than 90 days past due during the previous 24 months fails this check.",
+      "criteria": {"max_days_past_due_24m": 90, "comparison": "must_not_exceed"}
+    },
+    {
+      "clause_id": "CP-5.3",
+      "title": "Recent credit enquiries",
+      "text": "No more than 5 bureau enquiries may have occurred in the previous 6 months.",
+      "criteria": {"enquiries_6m_max": 5}
+    },
+    {
+      "clause_id": "CP-5.4",
+      "title": "Thin bureau file",
+      "text": "An applicant without bureau history is referred, and the eligible amount is capped at Rs 75,000.",
+      "criteria": {"no_history_outcome": "refer", "amount_cap": 75000, "currency": "INR"}
+    },
+    {
+      "clause_id": "CP-6.1",
+      "title": "Identity checks",
+      "text": "PAN must be verified and the KYC name-match score must be at least 0.85.",
+      "criteria": {"pan_status": "verified", "name_match_score_min": 0.85}
+    },
+    {
+      "clause_id": "CP-6.2",
+      "title": "Income-document consistency",
+      "text": "Bank salary credits must be within 10% of payslip net income; payslip gross less deductions must reconcile to net; and employer names must match.",
+      "criteria": {"salary_credit_variance_max": 0.10, "payslip_arithmetic_must_reconcile": true, "employer_name_must_match": true}
+    },
+    {
+      "clause_id": "CP-7.1",
+      "title": "Illustrative pricing",
+      "text": "Annual reducing-balance rates are 11.5% for scores 750+, 13.5% for scores 700-749, and 16% for scores 650-699.",
+      "criteria": {"basis": "annual reducing balance", "rates": [{"score_min": 750, "annual_rate": 0.115}, {"score_min": 700, "score_max": 749, "annual_rate": 0.135}, {"score_min": 650, "score_max": 699, "annual_rate": 0.16}]}
+    },
+    {
+      "clause_id": "CP-8.1",
+      "title": "Human sanction approval",
+      "text": "Every sanction requires an affirmative human approval; AI does not sanction loans.",
+      "criteria": {"human_approval_required": true, "ai_may_sanction": false}
+    },
+    {
+      "clause_id": "CP-8.2",
+      "title": "Reason for an override",
+      "text": "A human decision that differs from the AI recommendation must include a written reason.",
+      "criteria": {"written_reason_required_for_override": true}
+    }
+  ],
+  "regulatory_topic_notes": [
+    {
+      "clause_id": "REG-DIGITAL-LENDING",
+      "title": "Digital lending disclosures",
+      "text": "A digital loan journey should clearly present material costs and terms, including a Key Fact Statement, and explain any applicable cooling-off option. Summary for demo; verify against the official RBI document"
+    },
+    {
+      "clause_id": "REG-FAIR-PRACTICES",
+      "title": "Fair practices",
+      "text": "Customer communications and servicing should be transparent, respectful, and consistent, with clear routes to raise and resolve concerns. Summary for demo; verify against the official RBI document"
+    },
+    {
+      "clause_id": "REG-CREDIT-BUREAU",
+      "title": "Credit-bureau reporting",
+      "text": "Credit information should be handled and reported through appropriate authorized processes, with care for accuracy and customer dispute handling. Summary for demo; verify against the official RBI document"
+    }
+  ]
+}

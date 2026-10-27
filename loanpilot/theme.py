@@ -3,6 +3,8 @@
 import streamlit as st
 
 from loanpilot.badges import implementation_badge
+from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.store import SQLiteStore
 
 _CSS = """
 <style>
@@ -72,4 +74,15 @@ def render_placeholder(title: str, purpose: str, phase: int) -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"Built in phase {phase}")
+    store = SQLiteStore()
+    if store.table_counts().get("cur_customers", 0) == 0:
+        st.info("No demo data is loaded yet. Load the synthetic sample dataset to begin.")
+        if st.button("Load demo data", key="load_demo_data"):
+            _reset_demo_data(store)
 
+
+def _reset_demo_data(store: SQLiteStore) -> None:
+    """Regenerate the synthetic dataset and report each table's row count."""
+    counts = seed_demo_data(store, reset=True)
+    count_text = ", ".join(f"{table}: {count}" for table, count in counts.items())
+    st.toast(f"Demo data ready. {count_text}")

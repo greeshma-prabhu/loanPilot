@@ -4,6 +4,8 @@ import streamlit as st
 
 from loanpilot import config
 from loanpilot.badges import render_badge_legend
+from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.store import SQLiteStore
 from loanpilot.pages import (
     about_faq,
     ai_assessment,
@@ -53,7 +55,11 @@ def main() -> None:
         st.markdown(f"## {config.APP_NAME}")
         st.caption(config.BANK_NAME)
         if st.button("Reset demo data", width="stretch"):
-            st.toast("Reset arrives in phase 2")
+            counts = seed_demo_data(SQLiteStore(), reset=True)
+            count_text = ", ".join(
+                f"{table}: {count}" for table, count in counts.items()
+            )
+            st.toast(f"Demo data reset. {count_text}")
         st.divider()
         render_badge_legend()
 

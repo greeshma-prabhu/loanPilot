@@ -33,6 +33,7 @@ def test_app_runs_without_exception() -> None:
     """The navigation entry point should render its default page."""
     app = AppTest.from_file(str(APP_PATH)).run()
     assert not app.exception
+    assert any(button.label == "Reset demo data" for button in app.button)
 
 
 def test_each_page_renders_without_exception() -> None:

@@ -1,6 +1,7 @@
 """First-run initialization and repair for the synthetic demo data."""
 
 from pathlib import Path
+from threading import Lock
 
 from loanpilot.config import DATABASE_PATH, PROJECT_ROOT
 from loanpilot.data.documents import seed_persona_documents, validate_persona_documents
@@ -15,6 +16,7 @@ _PERSONA_DOCUMENT_TYPES = {
     "bank_statement_summary",
     "kyc_sheet",
 }
+_BOOTSTRAP_LOCK = Lock()
 
 
 def bootstrap_demo_data(
@@ -23,6 +25,16 @@ def bootstrap_demo_data(
     project_root: Path = PROJECT_ROOT,
 ) -> str | None:
     """Create missing schema, synthetic seed data, policy rows, and sample PDFs."""
+    with _BOOTSTRAP_LOCK:
+        return _bootstrap_demo_data(store, project_root=project_root)
+
+
+def _bootstrap_demo_data(
+    store: SQLiteStore | None,
+    *,
+    project_root: Path,
+) -> str | None:
+    """Run bootstrap while holding the process-wide initialization lock."""
     database_path = (
         DATABASE_PATH
         if project_root == PROJECT_ROOT

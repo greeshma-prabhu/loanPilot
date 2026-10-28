@@ -5,9 +5,10 @@ from datetime import date, datetime, time, timedelta
 import json
 import math
 import random
+from pathlib import Path
 from typing import Any
 
-from loanpilot.config import DATABASE_PATH
+from loanpilot.config import DATABASE_PATH, PROJECT_ROOT
 from loanpilot.data.policy import seed_policy_docs
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
@@ -445,7 +446,13 @@ def _seed_rows(store: SQLiteStore, rng: random.Random) -> None:
     transaction_rows = _generate_transactions(customers, rng)
 
     store.execute_many(
-        "INSERT INTO cur_customers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO cur_customers
+            (customer_id, name, dob, age, city, employer, employment_type,
+             current_tenure_months, total_experience_months, net_monthly_income,
+             pan_demo_id, kyc_status, relationship_since)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
         customer_rows,
     )
     store.execute_many(
@@ -678,6 +685,7 @@ def seed_demo_data(
     store: SQLiteStore | None = None,
     *,
     reset: bool = False,
+    project_root: Path = PROJECT_ROOT,
 ) -> dict[str, int]:
     """Generate the deterministic synthetic dataset and return table counts."""
     store = store or SQLiteStore(DATABASE_PATH)
@@ -688,11 +696,18 @@ def seed_demo_data(
     create_schema(store)
     _seed_rows(store, random.Random(SEED))
     seed_policy_docs(store)
-    from loanpilot.data.documents import seed_persona_documents, validate_persona_documents
+    from loanpilot.data.documents import (
+        seed_persona_documents,
+        validate_persona_documents,
+    )
 
-    seed_persona_documents(store)
+    seed_persona_documents(
+        store,
+        documents_dir=project_root / "data" / "documents",
+        project_root=project_root,
+    )
     validate_seeded_data(store)
-    validate_persona_documents(store)
+    validate_persona_documents(store, project_root=project_root)
     return store.table_counts()
 
 

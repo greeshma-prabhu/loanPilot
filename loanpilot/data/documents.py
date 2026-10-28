@@ -7,6 +7,7 @@ from fpdf import FPDF
 
 from loanpilot.config import BANK_NAME, DATA_DIR, DOCUMENTS_DIR, PROJECT_ROOT
 from loanpilot.data.seed import PERSONAS
+from loanpilot.data.queries import save_persona_documents
 from loanpilot.data.store import SQLiteStore
 
 _WATERMARK = "SYNTHETIC SAMPLE, DEMO ONLY"
@@ -142,12 +143,17 @@ def _write_pdf(path: Path, title: str, text: str) -> None:
     pdf.output(str(path))
 
 
-def seed_persona_documents(store: SQLiteStore) -> int:
+def seed_persona_documents(
+    store: SQLiteStore,
+    *,
+    documents_dir: Path = DOCUMENTS_DIR,
+    project_root: Path = PROJECT_ROOT,
+) -> int:
     """Write three synthetic PDFs per persona and register their text in RAW."""
     rows: list[tuple[Any, ...]] = []
     for persona_key in PERSONAS:
         application_id = f"APP-{persona_key}"
-        folder = DOCUMENTS_DIR / application_id
+        folder = documents_dir / application_id
         folder.mkdir(parents=True, exist_ok=True)
         submitted_at = store.query(
             "SELECT submitted_at FROM cur_applications WHERE application_id = ?",
@@ -157,7 +163,7 @@ def seed_persona_documents(store: SQLiteStore) -> int:
             filename = f"{doc_type}.pdf"
             path = folder / filename
             _write_pdf(path, title, text)
-            relative_path = path.relative_to(PROJECT_ROOT).as_posix()
+            relative_path = path.relative_to(project_root).as_posix()
             rows.append(
                 (
                     f"DOC-{persona_key}-{doc_type.upper()}",
@@ -169,16 +175,14 @@ def seed_persona_documents(store: SQLiteStore) -> int:
                     submitted_at,
                 )
             )
-    store.execute_many(
-        "INSERT INTO raw_documents "
-        "(doc_id, application_id, doc_type, file_name, file_path, text_content, uploaded_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        rows,
-    )
-    return len(rows)
+    return save_persona_documents(rows, store)
 
 
-def validate_persona_documents(store: SQLiteStore) -> None:
+def validate_persona_documents(
+    store: SQLiteStore,
+    *,
+    project_root: Path = PROJECT_ROOT,
+) -> None:
     """Verify all generated files exist and persona four's three mismatches remain."""
     docs = store.query(
         "SELECT doc_type, file_path, text_content FROM raw_documents "
@@ -187,7 +191,7 @@ def validate_persona_documents(store: SQLiteStore) -> None:
     if len(docs) != 3:
         raise ValueError("Persona 4 must have exactly three registered documents")
     for row in docs.to_dict("records"):
-        path = DATA_DIR.parent / Path(row["file_path"])
+        path = project_root / Path(row["file_path"])
         if not path.is_file() or path.stat().st_size == 0:
             raise FileNotFoundError(f"Persona document is missing or empty: {path}")
     payslip = docs.loc[docs["doc_type"] == "payslip", "text_content"].iloc[0]

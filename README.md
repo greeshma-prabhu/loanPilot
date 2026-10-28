@@ -1,28 +1,146 @@
 # LoanPilot: Agentic Personal Loan Approval
 
-A Streamlit presales point-of-view demo for Aarambh Bank. It uses synthetic
-customer data and illustrative policy only; it is not a real bank system or
-credit decision.
+A Streamlit presales demonstration for fictional Aarambh Bank. LoanPilot uses
+synthetic people, documents, and bureau/KYC responses. It is not a real bank
+system, credit decision, loan offer, or regulatory-compliance claim. AI can
+recommend and explain, but a human reviewer makes the decision.
 
 ## Run locally
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
+### Windows PowerShell
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-The app starts with an empty local SQLite database. Use **Load demo data** on a
-page or **Reset demo data** in the sidebar to generate the deterministic
-synthetic dataset and sample PDFs. The database lives at `data/loanpilot.db`;
-all demo identities and documents are synthetic and are not credit decisions.
+### Linux or macOS
 
-Generate or replace the dataset from the command line with
-`python -m loanpilot.data.seed --reset`.
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
 
-The AI Assessment page runs deterministic policy checks and hands every
-recommendation to Human Review. Without a `GEMINI_API_KEY`, language output uses
-the recorded persona traces; set the key in `.streamlit/secrets.toml` or the
-environment to enable Live Gemini. Export replay data created by live assessments
-with `python -m loanpilot.agent.record`.
+On first launch the app creates the local SQLite database and synthetic sample
+documents if they are missing. The application paths are rooted at the project
+directory, so the launch command can also name `app.py` by its full path from
+another working directory.
 
-Run the test suite with `pytest`.
+### Optional Gemini language output
+
+The app works without credentials and uses clearly labelled recorded output.
+For local development, copy `.streamlit/secrets.toml.example` to
+`.streamlit/secrets.toml` and add a Gemini API key:
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
+notepad .streamlit\secrets.toml
+```
+
+Linux or macOS:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+${EDITOR:-nano} .streamlit/secrets.toml
+```
+
+Then put the key in the file:
+
+```toml
+GEMINI_API_KEY = "your-key"
+```
+
+Alternatively, set the key in the environment for the current terminal:
+
+```powershell
+$env:GEMINI_API_KEY = "your-key"
+```
+
+```bash
+export GEMINI_API_KEY="your-key"
+```
+
+Never commit the key. To override the default `gemini-2.5-flash` model, set
+`GEMINI_MODEL` in the environment using the same syntax. Gemini only extracts
+fields and writes explanations; it cannot change deterministic policy outcomes
+or sanction a loan.
+
+## Deploy to Streamlit Community Cloud
+
+1. Push this repository to a GitHub repository accessible to your Streamlit
+   Community Cloud account. Do not include `.streamlit/secrets.toml` or local
+   database files.
+2. In Streamlit Community Cloud, choose **Create app**, select the repository,
+   branch, and `app.py` as the main file, then deploy.
+3. Optional: open the app's **Settings → Secrets**, add:
+
+   ```toml
+   GEMINI_API_KEY = "your-key"
+   ```
+
+   With no key, the app continues in recorded mode. Do not paste credentials
+   into code, logs, or this repository.
+4. Community Cloud installs dependencies from `requirements.txt`. At startup
+   the app creates the SQLite database and synthetic documents if absent.
+   Local files on hosted app instances are ephemeral; expect demo data to be
+   regenerated after a host restart.
+
+The personas, generated PDFs, and all sample responses are synthetic. Gemini is
+optional and is not required for deployment.
+
+## Reset demo data
+
+Reset replaces the local demo database and regenerates its synthetic sample
+documents. It does not erase source code or Streamlit secrets.
+
+### Windows PowerShell
+
+```powershell
+.\.venv\Scripts\python.exe -m loanpilot.data.seed --reset
+```
+
+### Linux or macOS
+
+```bash
+.venv/bin/python -m loanpilot.data.seed --reset
+```
+
+The **Reset demo data** sidebar button performs the same synthetic-data reset.
+
+## Tests
+
+From a clean clone, create and activate the environment using the commands
+above, then run:
+
+```bash
+python -m pytest
+```
+
+The suite covers all nine page renders, workflows, bootstrap behavior, and
+style checks. Tests use temporary databases where writes are required.
+
+## Project structure
+
+```text
+app.py                      Streamlit entry point and navigation
+loanpilot/
+  agent/                    Assessment, language wrapper, and sanction workflows
+  data/                     SQLite schema, queries, bootstrap, and seed data
+  pages/                    The nine Streamlit pages
+  policy/                   Illustrative deterministic policy configuration
+  config.py                 Project-root paths and application settings
+  theme.py                  Shared page styling and presentation helpers
+data/                       Local database and generated synthetic PDFs
+docs/                       Research notes and AI usage log
+tests/                      Workflow, page-load, and style tests
+.streamlit/                 Streamlit theme and secrets example
+requirements.txt            Runtime and test dependencies
+```

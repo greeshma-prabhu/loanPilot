@@ -47,16 +47,16 @@ def _render_navigation_app(store: SQLiteStore) -> AppTest:
     return AppTest.from_string(script)
 
 
-def test_applications_list_renders_and_pins_demo_cases(seeded_store) -> None:
-    """The list shows all 66 applications and pinned persona stories."""
+def test_applications_list_renders_compact_demo_cases_and_paged_table(seeded_store) -> None:
+    """The list shows compact persona entries and no more than 25 table rows."""
     app = _render_app(seeded_store).run()
     assert not app.exception
     assert app.title[0].value == "Applications"
     assert any("Matching applications" in metric.label and metric.value == "66" for metric in app.metric)
     assert any("Priya Menon" in markdown.value for markdown in app.markdown)
-    assert any(button.label == "Open Priya Menon case" for button in app.button)
-    table = app.dataframe[0]
-    assert len(table.value) == 66
+    assert any(button.key == "open_APP-PERSONA-1" and button.label == "Open" for button in app.button)
+    table = next(markdown.value for markdown in app.markdown if "<table" in markdown.value)
+    assert table.count("<tr>") == 26
 
 
 def test_stage_filter_narrows_applications(seeded_store) -> None:
@@ -65,8 +65,8 @@ def test_stage_filter_narrows_applications(seeded_store) -> None:
     app.selectbox(key="applications_stage").select("Submitted").run()
     assert not app.exception
     assert any(metric.label == "Matching applications" and metric.value == "6" for metric in app.metric)
-    table = app.dataframe[0]
-    assert len(table.value) == 6
+    table = next(markdown.value for markdown in app.markdown if "<table" in markdown.value)
+    assert table.count("<tr>") == 7
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,62 @@
+[
+  {
+    "component": "Synthetic data store",
+    "status": "Real",
+    "note": "Local SQLite stand-in; all records are synthetic."
+  },
+  {
+    "component": "Deterministic policy engine",
+    "status": "Real",
+    "note": "Policy clauses are evaluated by auditable Python code."
+  },
+  {
+    "component": "Document reconciliation checks",
+    "status": "Real",
+    "note": "Payslip, salary-credit and employer comparisons run in this demo."
+  },
+  {
+    "component": "Gemini extraction and explanation",
+    "status": "Conditional",
+    "note": "Marked Real only after a persisted live Gemini trace; otherwise uses recorded language output."
+  },
+  {
+    "component": "Bureau responses",
+    "status": "Simulated",
+    "note": "Mock responses are generated from synthetic inputs."
+  },
+  {
+    "component": "KYC responses",
+    "status": "Simulated",
+    "note": "Mock KYC responses are generated for the demonstration."
+  },
+  {
+    "component": "CERSAI",
+    "status": "Not applicable",
+    "note": "Unsecured personal-loan demonstration."
+  },
+  {
+    "component": "Disbursement",
+    "status": "Simulated",
+    "note": "No money is moved; the record is explicitly simulated."
+  },
+  {
+    "component": "Sanction letter",
+    "status": "Real",
+    "note": "A PDF is generated here with synthetic sample content."
+  },
+  {
+    "component": "BigQuery",
+    "status": "Planned",
+    "note": "Target-state integration; not connected."
+  },
+  {
+    "component": "Authentication",
+    "status": "Planned",
+    "note": "No reviewer authentication is implemented."
+  },
+  {
+    "component": "Alerting",
+    "status": "Planned",
+    "note": "No external alerts are sent."
+  }
+]

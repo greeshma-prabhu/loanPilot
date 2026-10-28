@@ -2,6 +2,8 @@
 __pycache__/
 data/*.db
 data/documents/
+data/uploads/
+data/sanctions/
 .streamlit/secrets.toml
 .env
 .pytest_cache/

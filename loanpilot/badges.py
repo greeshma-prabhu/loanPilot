@@ -30,8 +30,8 @@ def implementation_badge(kind: BadgeKind) -> str:
 
 
 def render_badge_legend() -> None:
-    """Render the sidebar legend for implementation-status badges."""
-    st.markdown("### Implementation status")
-    for kind in ("real", "simulated", "planned"):
-        st.markdown(implementation_badge(kind), unsafe_allow_html=True)
-        st.caption(_BADGES[kind][1].split(" (", maxsplit=1)[1].rstrip(")"))
+    """Render a compact, tooltip-enabled legend for implementation statuses."""
+    badges = " ".join(
+        implementation_badge(kind) for kind in ("real", "simulated", "planned")
+    )
+    st.markdown(f'<div class="lp-badge-legend">{badges}</div>', unsafe_allow_html=True)

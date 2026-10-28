@@ -1,6 +1,7 @@
 """Applications list and synthetic case view."""
 
 from datetime import datetime
+from html import escape
 import json
 from pathlib import Path
 import re
@@ -16,6 +17,8 @@ from loanpilot.components import (
     case_header_card,
     fmt_inr,
     kpi_card,
+    render_decision_card,
+    render_why,
     stage_tracker,
     status_chip,
 )
@@ -37,7 +40,7 @@ from loanpilot.data.queries import (
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.theme import render_disclaimer, render_header
+from loanpilot.theme import format_datetime, render_disclaimer, render_header
 
 _PERSONA_STORIES = {
     "PERSONA-1": "Clean approve: consistent income and documents, strong bureau profile.",
@@ -56,6 +59,7 @@ _PERSONA_SHORT_NAMES = {
     "PERSONA-5": "Karthik Nair",
     "PERSONA-6": "Meera Iyer",
 }
+_CLOSED_STAGES = {"Rejected", "Disbursed (simulated)", "Awaiting documents"}
 
 
 def _select_application(application_id: str) -> None:
@@ -102,31 +106,53 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
     if applications.empty:
         return pd.DataFrame(
             columns=[
-                "ID",
                 "Applicant",
-                "Product",
                 "Amount",
                 "Stage",
                 "AI recommendation",
                 "Human decision",
                 "Risk band",
-                "Owner",
                 "Age (days)",
             ]
         )
     return pd.DataFrame(
         {
-            "ID": applications["application_id"],
             "Applicant": applications["applicant"],
-            "Product": "Personal loan",
             "Amount": applications["requested_amount"].map(fmt_inr),
-            "Stage": applications["stage"],
+            "Stage": applications["stage"].fillna("—"),
             "AI recommendation": applications["ai_recommendation"].fillna("—"),
             "Human decision": applications["human_decision"].fillna("—"),
             "Risk band": applications["risk_band"].fillna("—"),
-            "Owner": applications["owner"].fillna("—"),
             "Age (days)": applications["submitted_at"].map(_age_in_days),
         }
+    )
+
+
+def _render_application_table(frame: pd.DataFrame) -> None:
+    """Render a compact, accessible table with consistent text status chips."""
+    status_columns = {"Stage", "AI recommendation", "Human decision", "Risk band"}
+    rows = []
+    for _, row in frame.iterrows():
+        cells = []
+        for column in frame.columns:
+            value = str(row[column])
+            if column in status_columns:
+                kind = (
+                    "success" if value in {"Approve", "Approve with conditions", "Low"}
+                    else "warning" if value in {"Refer", "Refer up", "Request documents", "Medium"}
+                    else "danger" if value in {"Decline", "Reject", "High"}
+                    else "info" if column == "Stage" and value != "—"
+                    else "neutral"
+                )
+                cells.append(f"<td>{status_chip(value, kind)}</td>")
+            else:
+                cells.append(f"<td>{escape(value)}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    headers = "".join(f"<th scope='col'>{escape(str(column))}</th>" for column in frame.columns)
+    st.markdown(
+        '<div class="lp-table-wrap"><table class="lp-data-table">'
+        f"<thead><tr>{headers}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>",
+        unsafe_allow_html=True,
     )
 
 
@@ -141,27 +167,41 @@ def _render_demo_cards(rows: pd.DataFrame) -> None:
     """Keep persona cases above the rest of the filtered application list."""
     if rows.empty:
         return
-    st.subheader("Pinned demo cases")
-    for start in range(0, len(rows), 2):
-        row_group = rows.iloc[start : start + 2]
-        columns = st.columns(2)
+    st.subheader("Demo cases")
+    for start in range(0, len(rows), 3):
+        row_group = rows.iloc[start : start + 3]
+        columns = st.columns(3)
         for column, (_, row) in zip(columns, row_group.iterrows()):
             persona_key = row["persona_key"]
+            story = _PERSONA_STORIES[persona_key]
             with column:
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{row['applicant']}** · `{row['application_id']}` "
-                        f"{status_chip('Demo case', 'demo')}",
-                        unsafe_allow_html=True,
-                    )
-                    st.caption(_PERSONA_STORIES[persona_key])
-                    st.button(
-                        f"Open {row['applicant']} case",
-                        key=f"open_{row['application_id']}",
-                        on_click=_select_application,
-                        args=(row["application_id"],),
-                        width="stretch",
-                    )
+                st.markdown(f"**{escape(str(row['applicant']))}**")
+                st.markdown(
+                    f'<div class="lp-demo-story" title="{escape(story)}">'
+                    f"{escape(story)}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.button(
+                    "Open",
+                    key=f"open_{row['application_id']}",
+                    on_click=_select_application,
+                    args=(row["application_id"],),
+                    width="stretch",
+                )
+
+
+def _previous_applications_page() -> None:
+    """Move the application list to its preceding page."""
+    st.session_state["applications_page"] = max(
+        0, int(st.session_state.get("applications_page", 0)) - 1
+    )
+
+
+def _next_applications_page(page_count: int) -> None:
+    """Move the application list to its following page."""
+    st.session_state["applications_page"] = min(
+        page_count - 1, int(st.session_state.get("applications_page", 0)) + 1
+    )
 
 
 def _render_applications_list(store: SQLiteStore) -> None:
@@ -184,7 +224,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
             for value in all_rows["ai_recommendation"].dropna().unique().tolist()
         ),
     ]
-    filter_columns = st.columns([1.2, 1.2, 1, 2])
+    filter_columns = st.columns([1.2, 1.2, 1.4, 1, 2])
     with filter_columns[0]:
         stage = st.selectbox("Stage", stage_options, key="applications_stage")
     with filter_columns[1]:
@@ -194,45 +234,82 @@ def _render_applications_list(store: SQLiteStore) -> None:
             key="applications_recommendation",
         )
     with filter_columns[2]:
-        demo_only = st.toggle("Demo cases only", key="applications_demo_only")
+        worklist = st.segmented_control(
+            "Cases",
+            ("Active", "Closed", "All"),
+            default="Active",
+            key="applications_worklist",
+        )
     with filter_columns[3]:
-        search = st.text_input("Search ID or applicant", key="applications_search")
+        demo_only = st.toggle("Demo cases only", key="applications_demo_only")
+    with filter_columns[4]:
+        search = st.text_input("Search applicant or case reference", key="applications_search")
 
+    active_count = int((~all_rows["stage"].isin(_CLOSED_STAGES)).sum())
+    closed_count = int(all_rows["stage"].isin(_CLOSED_STAGES).sum())
+    st.caption(
+        f"Active {active_count:,} · Closed {closed_count:,} · All {len(all_rows):,}"
+    )
     filters = {
         "stage": stage,
         "recommendation": recommendation,
+        "worklist": worklist or "Active",
         "demo_only": demo_only,
         "search": search.strip(),
     }
     filtered = list_applications(filters, store)
-    demo_rows = filtered.loc[filtered["persona_key"].notna()]
+    pinned_mask = filtered["persona_key"].notna() & ~filtered["stage"].isin(_CLOSED_STAGES)
+    demo_rows = filtered.loc[pinned_mask]
+    open_options = filtered.loc[~pinned_mask]
     historical_rows = filtered.loc[filtered["persona_key"].isna()]
 
     metric_columns = st.columns(3)
     metric_columns[0].metric("Matching applications", len(filtered))
-    metric_columns[1].metric("Demo cases", len(demo_rows))
+    metric_columns[1].metric("Open demo cases", len(demo_rows))
     metric_columns[2].metric("Historical applications", len(historical_rows))
     _render_demo_cards(demo_rows)
 
     st.subheader("Application list")
-    st.dataframe(
-        _list_frame(filtered),
-        width="stretch",
-        hide_index=True,
-        key="applications_table",
-    )
+    page_size = 25
+    page_count = max(1, (len(filtered) + page_size - 1) // page_size)
+    page_index = min(int(st.session_state.get("applications_page", 0)), page_count - 1)
+    st.session_state["applications_page"] = page_index
+    if page_count > 1:
+        page_controls = st.columns([1, 3, 1])
+        with page_controls[0]:
+            st.button(
+                "Previous",
+                key="applications_previous_page",
+                on_click=_previous_applications_page,
+                disabled=page_index == 0,
+            )
+        with page_controls[1]:
+            st.caption(f"Page {page_index + 1} of {page_count} · {len(filtered):,} applications")
+        with page_controls[2]:
+            st.button(
+                "Next",
+                key="applications_next_page",
+                on_click=_next_applications_page,
+                args=(page_count,),
+                disabled=page_index + 1 >= page_count,
+            )
+    page_rows = filtered.iloc[page_index * page_size : (page_index + 1) * page_size]
+    _render_application_table(_list_frame(page_rows))
 
-    if not historical_rows.empty:
-        historical_options = historical_rows["application_id"].tolist()
+    if not open_options.empty:
+        selectable_ids = open_options["application_id"].tolist()
         selected_historical = st.selectbox(
-            "Open historical application",
-            historical_options,
-            format_func=lambda application_id: (
-                f"{application_id} · "
-                f"{historical_rows.loc[historical_rows.application_id == application_id, 'applicant'].iloc[0]}"
+            "Open a case from the list",
+            selectable_ids,
+            format_func=lambda application_id: str(
+                open_options.loc[
+                    open_options.application_id == application_id, "applicant"
+                ].iloc[0]
             ),
-            key="historical_case_select",
+            key="list_case_select",
         )
+        with st.expander("Selected case reference"):
+            st.code(str(selected_historical))
         st.button(
             "Open selected application",
             key="open_historical_case",
@@ -344,7 +421,7 @@ def _render_documents(
         with st.container(border=True):
             st.markdown(
                 f"**{document['doc_type'].replace('_', ' ').title()}** · "
-                f"uploaded {document['uploaded_at']}"
+                f"uploaded {format_datetime(document['uploaded_at'])}"
             )
             with st.expander("View extracted text"):
                 st.text(document["text_content"])
@@ -402,7 +479,7 @@ def _render_financials(
     ]
     for index, (label, value, formula) in enumerate(metrics):
         with columns[index % len(columns)]:
-            kpi_card(label, value, help_text=formula, real=True)
+            kpi_card(label, value, help_text=formula)
 
 
 def _render_checks(
@@ -413,11 +490,15 @@ def _render_checks(
 ) -> None:
     """Render source panels for core banking, bureau, KYC, and CERSAI."""
     simulated_badge = implementation_badge("simulated")
+    st.markdown(
+        f"### Source checks {simulated_badge}",
+        unsafe_allow_html=True,
+    )
     bureau = _single_bureau(application_id, store)
     kyc = _single_kyc(application_id, store)
 
     with st.container(border=True):
-        st.markdown(f"### Core banking record {simulated_badge}", unsafe_allow_html=True)
+        st.markdown("#### Core banking record")
         st.write(f"Existing loans: {len(loans)}")
         if loans.empty:
             st.caption("No existing loans recorded.")
@@ -433,7 +514,7 @@ def _render_checks(
         )
 
     with st.container(border=True):
-        st.markdown(f"### Credit bureau response {simulated_badge}", unsafe_allow_html=True)
+        st.markdown("#### Credit bureau response")
         st.write(f"Score: {bureau.get('score') if bureau.get('score') is not None else 'No history (thin file)'}")
         st.write(
             f"Active accounts: {bureau.get('active_accounts', '—')} · "
@@ -443,12 +524,12 @@ def _render_checks(
         st.write(f"Written off: {'Yes' if bureau.get('written_off') else 'No'}")
 
     with st.container(border=True):
-        st.markdown(f"### KYC response {simulated_badge}", unsafe_allow_html=True)
+        st.markdown("#### KYC response")
         st.write(f"PAN status: {kyc.get('pan_status', 'Unavailable')}")
         st.write(f"Name-match score: {kyc.get('name_match_score', 'Unavailable')}")
 
     with st.container(border=True):
-        st.markdown(f"### CERSAI {simulated_badge}", unsafe_allow_html=True)
+        st.markdown("#### CERSAI")
         st.write("Not applicable (unsecured personal loan)")
 
 
@@ -458,15 +539,27 @@ def _render_audit(application_id: str, store: SQLiteStore) -> None:
     if audit.empty:
         st.info("No audit events are recorded for this application.")
     else:
-        st.dataframe(audit, width="stretch", hide_index=True)
+        display = audit.rename(
+            columns={
+                "time": "Date and time",
+                "actor": "Who",
+                "action": "Action",
+                "detail": "What happened",
+            }
+        ).copy()
+        display["Date and time"] = display["Date and time"].map(format_datetime)
+        st.dataframe(display, width="stretch", hide_index=True)
 
 
 def _render_agent_trace(application_id: str, store: SQLiteStore) -> None:
-    """Render the latest saved assessment trace for the current case."""
+    """Render the shared decision view and collapsible agent trace."""
+    render_decision_card(application_id, store)
+    render_why(application_id, store)
     trace = get_agent_trace(application_id, store=store)
     if trace.empty:
-        st.info("No AI assessment has been run for this case yet. Built in phase 4.")
+        st.info("No agent trace has been saved for this case.")
         return
+    st.subheader("Agent steps")
     for _, step in trace.iterrows():
         with st.expander(
             f"{int(step['step_no'])}. {step['agent']} · "
@@ -475,38 +568,30 @@ def _render_agent_trace(application_id: str, store: SQLiteStore) -> None:
             payload = json.loads(step["tool_calls_json"])
             for call in payload.get("calls", []):
                 st.markdown(f"**{call['name']}**")
-                st.caption("Inputs")
-                st.json(call.get("inputs", {}))
-                st.caption("Outputs")
-                st.json(call.get("outputs", {}))
+                with st.expander("Show raw inputs"):
+                    st.json(call.get("inputs", {}))
+                with st.expander("Show raw outputs"):
+                    st.json(call.get("outputs", {}))
             st.markdown(f"**Handoff:** {step['handoff']}")
 
 
-def _render_decision(application: pd.Series) -> None:
-    """Compare the AI recommendation with the recorded human outcome."""
-    recommendation = application.get("ai_recommendation")
-    reasons_json = application.get("ai_reasons_json")
-    reasons = json.loads(reasons_json) if reasons_json else {}
-    left, right = st.columns(2)
-    with left:
-        st.markdown("#### AI assessment")
-        st.write(f"Recommendation: **{recommendation or 'Not run'}**")
-        if reasons.get("risk_band"):
-            st.write(f"Risk band: **{reasons['risk_band']}**")
-        st.write(reasons.get("explanation", "No AI explanation is available."))
-        st.caption(
-            f"Explanation mode: {reasons.get('explanation_mode', 'Not available')}"
+def _render_decision(application_id: str, application: pd.Series, store: SQLiteStore) -> None:
+    """Show the shared AI summary beside the saved human outcome."""
+    render_decision_card(application_id, store)
+    render_why(application_id, store)
+    st.subheader("Human decision")
+    human_decision = application.get("human_decision")
+    if application.get("stage") == "Rejected":
+        st.markdown(
+            status_chip("Rejected", "danger"),
+            unsafe_allow_html=True,
         )
-    with right:
-        st.markdown("#### Human decision")
-        human_decision = application.get("human_decision")
-        st.write(f"Decision: **{human_decision or 'Pending'}**")
-        st.write(f"Reviewer: {application.get('decided_by') or '—'}")
-        st.write(f"Decided at: {application.get('decided_at') or '—'}")
-        st.write(f"Override: **{'Yes' if application.get('is_override') else 'No'}**")
-        st.write(application.get("human_reason") or "No human decision has been recorded.")
-        if application.get("is_override"):
-            st.warning("Human decision differs from the AI recommendation (CP-8.2).")
+    st.write(f"Decision: **{human_decision or 'Pending'}**")
+    st.write(f"Reviewer: {application.get('decided_by') or '—'}")
+    st.write(f"Decided at: {format_datetime(application.get('decided_at'))}")
+    st.write(f"Override: **{'Yes' if application.get('is_override') else 'No'}**")
+    if human_decision:
+        st.write(f"Reason: {application.get('human_reason') or '—'}")
 
 
 def _disbursement_callback(
@@ -623,7 +708,10 @@ def _render_sanction(application_id: str, store: SQLiteStore) -> None:
             f"Gross: {fmt_inr(record['gross_amount'])} · Fees: {fmt_inr(record['fees'])} · "
             f"Net credited (simulated): **{fmt_inr(record['net_amount'])}**"
         )
-        st.write(f"Date: {record['disbursed_at']} · Mode: **{record['mode']}**")
+        st.write(
+            f"Date: {format_datetime(record['disbursed_at'])} · "
+            f"Mode: **{record['mode']}**"
+        )
     else:
         st.button(
             "Run simulated disbursement",
@@ -664,9 +752,16 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
 
     render_header(
         "Case workspace",
-        f"{application['name']} · {application_id} · {application['stage']}",
+        f"{application['name']} · {application['stage']}",
         "OPERATE  /  CASE FILE",
     )
+    if application["stage"] == "Rejected":
+        st.markdown(
+            f"{status_chip('Rejected', 'danger')} "
+            f"Reviewed by **{escape(str(application.get('decided_by') or 'Unknown reviewer'))}** · "
+            f"{escape(str(application.get('human_reason') or 'No written reason recorded.'))}",
+            unsafe_allow_html=True,
+        )
     back_column, assessment_column = st.columns([1, 1])
     with back_column:
         st.button(
@@ -682,6 +777,8 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
             args=(application_id,),
         )
     case_header_card(application)
+    with st.expander("Technical case reference"):
+        st.code(str(application_id))
     stage_tracker(str(application["stage"]))
 
     tabs = st.tabs(
@@ -707,7 +804,7 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     with tabs[4]:
         _render_agent_trace(application_id, store)
     with tabs[5]:
-        _render_decision(application)
+        _render_decision(application_id, application, store)
     with tabs[6]:
         _render_sanction(application_id, store)
     with tabs[7]:

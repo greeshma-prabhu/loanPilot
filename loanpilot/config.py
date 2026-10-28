@@ -12,6 +12,10 @@ DATA_DIR = PROJECT_ROOT / "data"
 DATABASE_PATH = DATA_DIR / "loanpilot.db"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 POLICY_PATH = PROJECT_ROOT / "loanpilot" / "policy" / "credit_policy.json"
+ILLUSTRATIVE_METRICS_PATH = (
+    PROJECT_ROOT / "loanpilot" / "policy" / "illustrative_metrics.json"
+)
+LEDGER_PATH = PROJECT_ROOT / "loanpilot" / "ledger.json"
 AGENT_RECORDED_DIR = PROJECT_ROOT / "loanpilot" / "agent" / "recorded"
 DOCS_DIR = PROJECT_ROOT / "docs"
 TESTS_DIR = PROJECT_ROOT / "tests"

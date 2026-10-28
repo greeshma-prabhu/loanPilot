@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 from typing import Any, Mapping
+from uuid import uuid4
 
 import pandas as pd
 
@@ -32,6 +33,14 @@ def list_applications(
         params.append(filters["recommendation"])
     if filters.get("demo_only"):
         clauses.append("a.persona_key IS NOT NULL")
+    if filters.get("worklist") == "Active":
+        clauses.append(
+            "a.stage NOT IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents')"
+        )
+    elif filters.get("worklist") == "Closed":
+        clauses.append(
+            "a.stage IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents')"
+        )
     if filters.get("search"):
         clauses.append("(a.application_id LIKE ? OR c.name LIKE ?)")
         search = f"%{filters['search']}%"
@@ -62,6 +71,23 @@ def list_applications(
     return _store(store).query(sql, params)
 
 
+def get_persona_document_records(
+    application_ids: list[str],
+    store: SQLiteStore | None = None,
+) -> pd.DataFrame:
+    """Fetch seeded persona applications and their registered document paths."""
+    if not application_ids:
+        return pd.DataFrame(columns=["application_id", "doc_type", "file_path"])
+    placeholders = ", ".join("?" for _ in application_ids)
+    return _store(store).query(
+        "SELECT a.application_id, d.doc_type, d.file_path "
+        "FROM cur_applications a "
+        "LEFT JOIN raw_documents d ON d.application_id = a.application_id "
+        f"WHERE a.application_id IN ({placeholders})",
+        application_ids,
+    )
+
+
 def get_application(application_id: str, store: SQLiteStore | None = None) -> pd.DataFrame:
     """Fetch one application with applicant, feature, and decision fields."""
     return _store(store).query(
@@ -69,7 +95,7 @@ def get_application(application_id: str, store: SQLiteStore | None = None) -> pd
         SELECT a.application_id, a.customer_id, a.requested_amount,
                a.tenure_months, a.purpose, a.channel, a.submitted_at,
                a.stage, a.persona_key,
-               c.name, c.dob, c.age, c.city, c.employer, c.employment_type,
+               c.name, c.dob, c.age, c.city, c.mobile, c.employer, c.employment_type,
                c.current_tenure_months, c.total_experience_months,
                c.net_monthly_income, c.pan_demo_id, c.kyc_status,
                c.relationship_since,
@@ -115,6 +141,24 @@ def get_documents(application_id: str, store: SQLiteStore | None = None) -> pd.D
         ORDER BY uploaded_at, doc_type
         """,
         (application_id,),
+    )
+
+
+def save_persona_documents(
+    rows: list[tuple[Any, ...]],
+    store: SQLiteStore | None = None,
+) -> int:
+    """Insert or refresh deterministic seeded-document records."""
+    return _store(store).execute_many(
+        "INSERT INTO raw_documents "
+        "(doc_id, application_id, doc_type, file_name, file_path, text_content, uploaded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(doc_id) DO UPDATE SET "
+        "application_id = excluded.application_id, "
+        "doc_type = excluded.doc_type, file_name = excluded.file_name, "
+        "file_path = excluded.file_path, text_content = excluded.text_content, "
+        "uploaded_at = excluded.uploaded_at",
+        rows,
     )
 
 
@@ -281,6 +325,22 @@ def get_review_queue(store: SQLiteStore | None = None) -> pd.DataFrame:
         """,
         ("Human Review",),
     )
+
+
+def has_live_gemini_trace(store: SQLiteStore | None = None) -> bool:
+    """Return whether a persisted assessment trace used Gemini live."""
+    database = _store(store)
+    tables = database.query(
+        "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
+        ("table", "cur_agent_trace"),
+    )
+    if tables.empty:
+        return False
+    result = database.query(
+        "SELECT COUNT(*) AS live_steps FROM cur_agent_trace WHERE mode = ?",
+        ("Live Gemini",),
+    )
+    return int(result.iloc[0]["live_steps"]) > 0
 
 
 def get_sanction(
@@ -687,3 +747,387 @@ def save_llm_cache(
         """,
         (application_id, step, mode, response_json, cached_at),
     )
+
+
+def overview_pipeline_counts(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Count active applications grouped by their current stage."""
+    return _store(store).query(
+        """
+        SELECT stage, COUNT(*) AS application_count
+        FROM cur_applications
+        WHERE stage NOT IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents')
+        GROUP BY stage
+        ORDER BY application_count DESC, stage
+        """
+    )
+
+
+def overview_recommendation_counts(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Count saved AI recommendations by decision category."""
+    return _store(store).query(
+        """
+        SELECT ai_recommendation AS recommendation, COUNT(*) AS application_count
+        FROM cur_decisions
+        WHERE ai_recommendation IN ('Approve', 'Refer', 'Decline')
+        GROUP BY ai_recommendation
+        ORDER BY CASE ai_recommendation
+                     WHEN 'Approve' THEN 1 WHEN 'Refer' THEN 2 ELSE 3
+                 END
+        """
+    )
+
+
+def overview_risk_counts(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Count saved AI risk bands."""
+    return _store(store).query(
+        """
+        SELECT json_extract(ai_reasons_json, '$.risk_band') AS risk_band,
+               COUNT(*) AS application_count
+        FROM cur_decisions
+        WHERE ai_recommendation IN ('Approve', 'Refer', 'Decline')
+          AND json_extract(ai_reasons_json, '$.risk_band') IS NOT NULL
+        GROUP BY risk_band
+        ORDER BY CASE risk_band
+                     WHEN 'Low' THEN 1 WHEN 'Medium' THEN 2 WHEN 'High' THEN 3
+                     ELSE 4
+                 END
+        """
+    )
+
+
+def overview_metrics(store: SQLiteStore | None = None) -> dict[str, float | int | None]:
+    """Return database-backed pipeline, recommendation, turnaround and review metrics."""
+    row = _store(store).query(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM cur_applications
+             WHERE stage NOT IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents'))
+                AS pipeline_count,
+            (SELECT COUNT(*) FROM cur_decisions
+             WHERE ai_recommendation = 'Approve') AS approve_count,
+            (SELECT COUNT(*) FROM cur_decisions
+             WHERE ai_recommendation = 'Refer') AS refer_count,
+            (SELECT COUNT(*) FROM cur_decisions
+             WHERE ai_recommendation = 'Decline') AS decline_count,
+            (SELECT COUNT(*) FROM cur_applications WHERE stage = 'Human Review')
+                AS pending_review_count,
+            (SELECT COUNT(*) FROM cur_applications WHERE stage = 'Rejected')
+                AS rejected_count,
+            (SELECT COUNT(*) FROM cur_applications WHERE stage = 'Sanction')
+                AS approved_count,
+            (SELECT COUNT(*) FROM cur_applications WHERE stage = 'Disbursed (simulated)')
+                AS disbursed_count,
+            (SELECT AVG((julianday(d.decided_at) - julianday(a.submitted_at)) * 24)
+             FROM cur_applications a
+             JOIN cur_decisions d ON d.application_id = a.application_id
+             WHERE a.application_id LIKE 'APP-HIST-%'
+               AND d.decided_at IS NOT NULL)
+                AS historical_processing_hours
+        """
+    ).iloc[0]
+    return {
+        key: None if pd.isna(value) else value.item() if hasattr(value, "item") else value
+        for key, value in row.items()
+    }
+
+
+def overview_attention_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """List current cases awaiting human review for the dashboard."""
+    return _store(store).query(
+        """
+        SELECT a.application_id, c.name AS applicant, a.submitted_at,
+               d.ai_recommendation,
+               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band
+        FROM cur_applications a
+        JOIN cur_customers c ON c.customer_id = a.customer_id
+        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE a.stage = ?
+        ORDER BY CASE d.ai_recommendation
+                     WHEN 'Decline' THEN 0 WHEN 'Refer' THEN 1 ELSE 2
+                 END,
+                 a.submitted_at, a.application_id
+        """,
+        ("Human Review",),
+    )
+
+
+def create_intake_application(
+    applicant: Mapping[str, Any],
+    application: Mapping[str, Any],
+    bureau: Mapping[str, Any],
+    kyc: Mapping[str, Any],
+    documents: list[Mapping[str, Any]],
+    store: SQLiteStore | None = None,
+    *,
+    application_id: str | None = None,
+    customer_id: str | None = None,
+) -> str:
+    """Atomically register a new synthetic applicant, case, evidence and audit event."""
+    database = _store(store)
+    application_id = application_id or f"APP-NEW-{uuid4().hex[:12].upper()}"
+    customer_id = customer_id or f"CUST-NEW-{uuid4().hex[:12].upper()}"
+    submitted_at = str(application["submitted_at"])
+    now = datetime.now().isoformat(timespec="seconds")
+    with database.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO cur_customers
+                (customer_id, name, dob, age, city, mobile, employer, employment_type,
+                 current_tenure_months, total_experience_months, net_monthly_income,
+                 pan_demo_id, kyc_status, relationship_since)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_id,
+                applicant["name"],
+                applicant["dob"],
+                int(applicant["age"]),
+                applicant["city"],
+                applicant["mobile"],
+                applicant["employer"],
+                applicant["employment_type"],
+                int(applicant["current_tenure_months"]),
+                int(applicant["total_experience_months"]),
+                float(applicant["net_monthly_income"]),
+                applicant["pan_demo_id"],
+                "pending",
+                now[:10],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO cur_applications
+                (application_id, customer_id, requested_amount, tenure_months,
+                 purpose, channel, submitted_at, stage, persona_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Submitted', NULL)
+            """,
+            (
+                application_id,
+                customer_id,
+                float(application["requested_amount"]),
+                int(application["tenure_months"]),
+                application["purpose"],
+                "Guided demo",
+                submitted_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO cur_accounts
+                (account_id, customer_id, type, avg_monthly_balance, opened_on)
+            VALUES (?, ?, 'Savings (synthetic)', 0, ?)
+            """,
+            (f"ACCT-{customer_id}", customer_id, now[:10]),
+        )
+        if float(applicant["existing_emi"]) > 0:
+            connection.execute(
+                """
+                INSERT INTO cur_existing_loans
+                    (loan_id, customer_id, product, sanctioned_amount, emi,
+                     outstanding, tenure_remaining_months, status)
+                VALUES (?, ?, 'Existing obligation (declared)', 0, ?, 0, 0, 'Active')
+                """,
+                (f"LOAN-{customer_id}", customer_id, float(applicant["existing_emi"])),
+            )
+        month = datetime.fromisoformat(submitted_at).date().replace(day=1)
+        transaction_rows = []
+        for offset in range(6):
+            month_index = month.year * 12 + month.month - 1 - offset
+            transaction_month = datetime(
+                month_index // 12,
+                month_index % 12 + 1,
+                1,
+            ).strftime("%Y-%m")
+            transaction_rows.append(
+                (
+                    customer_id,
+                    transaction_month,
+                    float(applicant["net_monthly_income"]),
+                    0.0,
+                    0,
+                )
+            )
+        connection.executemany(
+            """
+            INSERT INTO cur_transactions
+                (customer_id, month, salary_credit, total_debits, cheque_bounces)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            transaction_rows,
+        )
+        connection.execute(
+            """
+            INSERT INTO raw_bureau_responses (application_id, payload_json, fetched_at)
+            VALUES (?, ?, ?)
+            """,
+            (application_id, json.dumps(bureau, sort_keys=True), now),
+        )
+        connection.execute(
+            """
+            INSERT INTO raw_kyc_responses (application_id, payload_json, fetched_at)
+            VALUES (?, ?, ?)
+            """,
+            (application_id, json.dumps(kyc, sort_keys=True), now),
+        )
+        connection.executemany(
+            """
+            INSERT INTO raw_documents
+                (doc_id, application_id, doc_type, file_name, file_path,
+                 text_content, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    f"DOC-{uuid4().hex.upper()}",
+                    application_id,
+                    document["doc_type"],
+                    document["file_name"],
+                    document["file_path"],
+                    document["text_content"],
+                    now,
+                )
+                for document in documents
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO cur_audit_log
+                (event_id, application_id, ts, actor, action, detail)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"INTAKE-{uuid4().hex.upper()}",
+                application_id,
+                now,
+                "LoanPilot Guided Intake",
+                "Application submitted",
+                "Synthetic applicant and declared documents registered.",
+            ),
+        )
+    return application_id
+
+
+_EXPLORER_OBJECTS: dict[str, dict[str, str]] = {
+    "raw": {
+        "raw_documents": "Uploaded or sample document metadata, extracted text and file paths.",
+        "raw_bureau_responses": "Synthetic bureau request responses stored as JSON.",
+        "raw_kyc_responses": "Synthetic KYC request responses stored as JSON.",
+        "raw_policy_docs": "Policy clause text and version information.",
+    },
+    "curated": {
+        "cur_customers": "Applicant identity and declared financial profile; identifiers are fake.",
+        "cur_accounts": "Synthetic account summaries linked to customers.",
+        "cur_existing_loans": "Declared or synthetic existing credit obligations.",
+        "cur_repayments": "Repayment history by loan and due month.",
+        "cur_transactions": "Monthly salary credits, debits and cheque bounces.",
+        "cur_applications": "Loan request, stage and submission details.",
+        "cur_decisions": "AI recommendation and human review outcome fields.",
+        "cur_audit_log": "Timestamped actions and case events.",
+        "cur_agent_trace": "Ordered agent steps, tool calls, durations and handoffs.",
+        "cur_llm_cache": "Cached language output by application and step.",
+        "cur_sanctions": "Human-approved sanction, PDF and illustrative KFS data.",
+        "cur_disbursements": "Simulated disbursement records; no funds move.",
+    },
+    "serving": {
+        "srv_application_features": "Joined application features such as proposed EMI, FOIR and bureau values.",
+    },
+}
+
+_CANNED_READ_QUERIES: dict[str, str] = {
+    "Recent applications": (
+        "SELECT application_id, stage, requested_amount, submitted_at "
+        "FROM cur_applications ORDER BY submitted_at DESC LIMIT 10"
+    ),
+    "Customer income sample": (
+        "SELECT customer_id, name, city, net_monthly_income "
+        "FROM cur_customers ORDER BY customer_id LIMIT 10"
+    ),
+    "Document inventory": (
+        "SELECT doc_type, COUNT(*) AS document_count "
+        "FROM raw_documents GROUP BY doc_type ORDER BY doc_type LIMIT 10"
+    ),
+}
+
+
+def explorer_catalog(
+    store: SQLiteStore | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return documented RAW, CURATED and SERVING objects with counts and samples."""
+    database = _store(store)
+    with database.connection() as connection:
+        objects = {
+            row["name"]: row["type"]
+            for row in connection.execute(
+                "SELECT name, type FROM sqlite_master "
+                "WHERE type IN ('table', 'view')"
+            ).fetchall()
+        }
+        catalog: dict[str, list[dict[str, Any]]] = {}
+        for layer, descriptions in _EXPLORER_OBJECTS.items():
+            catalog[layer] = []
+            for name, description in descriptions.items():
+                if name not in objects:
+                    catalog[layer].append(
+                        {
+                            "name": name,
+                            "description": description,
+                            "row_count": 0,
+                            "sample": pd.DataFrame(),
+                        }
+                    )
+                    continue
+                quoted_name = '"' + name.replace('"', '""') + '"'
+                count = connection.execute(
+                    f"SELECT COUNT(*) FROM {quoted_name}"
+                ).fetchone()[0]
+                sample = pd.read_sql_query(
+                    f"SELECT * FROM {quoted_name} LIMIT 5",
+                    connection,
+                )
+                catalog[layer].append(
+                    {
+                        "name": name,
+                        "description": description,
+                        "row_count": int(count),
+                        "sample": sample,
+                    }
+                )
+    return catalog
+
+
+def validate_read_only_select(sql: str) -> str:
+    """Validate a single SELECT statement and clamp its explicit row limit."""
+    import re
+
+    statement = sql.strip()
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    if not statement or not re.match(r"(?is)^SELECT\b", statement):
+        raise ValueError("Only a single SELECT statement is allowed.")
+    if ";" in statement or "--" in statement or "/*" in statement:
+        raise ValueError("Comments and multiple SQL statements are not allowed.")
+    if re.search(
+        r"(?i)\b(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|ATTACH|DETACH|"
+        r"PRAGMA|VACUUM|REINDEX|TRIGGER)\b",
+        statement,
+    ):
+        raise ValueError("Only read-only SELECT queries are allowed.")
+    limit_match = re.search(r"(?i)\bLIMIT\s+(\d+)\s*$", statement)
+    if not limit_match:
+        return f"{statement} LIMIT 10"
+    limit = min(int(limit_match.group(1)), 10)
+    return f"{statement[:limit_match.start()]}LIMIT {limit}"
+
+
+def run_canned_read_query(
+    name: str,
+    store: SQLiteStore | None = None,
+) -> pd.DataFrame:
+    """Run one allow-listed SELECT query with a read-only SQLite connection."""
+    if name not in _CANNED_READ_QUERIES:
+        raise ValueError(f"Unknown canned query: {name}")
+    sql = validate_read_only_select(_CANNED_READ_QUERIES[name])
+    database = _store(store)
+    with database.connection() as connection:
+        connection.execute("PRAGMA query_only = ON")
+        return pd.read_sql_query(sql, connection)

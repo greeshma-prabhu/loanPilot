@@ -37,8 +37,8 @@ def _api_key() -> str | None:
     try:
         secret_key = st.secrets.get("GEMINI_API_KEY")
         return str(secret_key) if secret_key else None
-    except Exception as error:
-        LOGGER.info("Gemini secrets are unavailable; using recorded mode: %s", error)
+    except Exception:
+        LOGGER.info("Gemini secrets are unavailable; using recorded mode.")
         return None
 
 
@@ -114,7 +114,11 @@ def run_json_step(
             _save(application_id, step, LIVE_MODE, response, store)
             return response, LIVE_MODE
         except Exception as error:
-            LOGGER.warning("Gemini step %s failed; using recorded output: %s", step, error)
+            LOGGER.warning(
+                "Gemini step %s failed (%s); using recorded output.",
+                step,
+                type(error).__name__,
+            )
             if isinstance(error, InvalidLLMJSON):
                 _save(
                     application_id,

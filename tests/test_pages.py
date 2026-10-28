@@ -1,9 +1,16 @@
 """Smoke tests for the LoanPilot shell and placeholder pages."""
 
 from streamlit.testing.v1 import AppTest
+import pytest
+import pandas as pd
 
 from loanpilot.badges import implementation_badge
 from loanpilot.config import APP_PATH
+from loanpilot.data.queries import save_assessment_decision
+from loanpilot.data.schema import create_schema
+from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.store import SQLiteStore
+from loanpilot.pages import overview
 from loanpilot.pages import (
     about_faq,
     ai_assessment,
@@ -28,6 +35,33 @@ PAGE_MODULES = [
     about_faq,
 ]
 
+_STORE_PAGES = {
+    "overview",
+    "applications",
+    "new_application",
+    "ai_assessment",
+    "human_review",
+    "data_explorer",
+}
+
+
+@pytest.fixture(scope="module")
+def seeded_store(tmp_path_factory) -> SQLiteStore:
+    """Create an isolated seeded database for page rendering checks."""
+    store = SQLiteStore(tmp_path_factory.mktemp("page-smoke") / "seeded.db")
+    seed_demo_data(store, reset=True)
+    return store
+
+
+def _render_page(module, store: SQLiteStore) -> AppTest:
+    """Render a page against a test-owned store where it accepts one."""
+    page_name = module.__name__.rsplit(".", 1)[-1]
+    argument = f"SQLiteStore({str(store.path)!r})" if page_name in _STORE_PAGES else ""
+    imports = "from loanpilot.data.store import SQLiteStore\n" if argument else ""
+    return AppTest.from_string(
+        f"{imports}from {module.__name__} import render\nrender({argument})"
+    )
+
 
 def test_app_runs_without_exception() -> None:
     """The navigation entry point should render its default page."""
@@ -36,13 +70,73 @@ def test_app_runs_without_exception() -> None:
     assert any(button.label == "Reset demo data" for button in app.button)
 
 
-def test_each_page_renders_without_exception() -> None:
-    """Every page module should render independently."""
-    for module in PAGE_MODULES:
-        app = AppTest.from_string(
-            f"from {module.__name__} import render\nrender()"
-        ).run()
-        assert not app.exception, module.__name__
+@pytest.mark.parametrize(
+    ("module", "data_state"),
+    [(module, state) for module in PAGE_MODULES for state in ("empty", "seeded")],
+    ids=lambda value: value.__name__.rsplit(".", 1)[-1] if hasattr(value, "__name__") else value,
+)
+def test_each_page_loads_for_empty_and_seeded_data(module, data_state, tmp_path, seeded_store) -> None:
+    """Smoke-test every page with both empty and seeded database state."""
+    if data_state == "seeded":
+        store = seeded_store
+    else:
+        store = SQLiteStore(tmp_path / f"{module.__name__.rsplit('.', 1)[-1]}.db")
+        create_schema(store)
+    app = _render_page(module, store).run()
+    assert not app.exception, f"{module.__name__} with {data_state} data"
+
+
+def test_overview_empty_state_uses_dashes_and_prepare_button(tmp_path) -> None:
+    """An empty dashboard makes the next action clear without fake zero decisions."""
+    store = SQLiteStore(tmp_path / "overview-empty.db")
+    create_schema(store)
+    app = _render_page(overview, store).run()
+    assert not app.exception
+    assert any(button.label == "Prepare demo" for button in app.button)
+    assert app.session_state["prepare_leave_priya_unassessed"] is True
+    metric_values = {metric.value for metric in app.metric}
+    assert "—" in metric_values
+
+
+def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None:
+    """The reviewer queue directs presenters to the Overview preparation action."""
+    app = _render_page(
+        next(module for module in PAGE_MODULES if module.__name__.endswith(".human_review")),
+        seeded_store,
+    ).run()
+    assert not app.exception
+    assert any("No AI assessments are saved yet" in item.value for item in app.info)
+    assert any(button.label == "Prepare demo on Overview" for button in app.button)
+
+
+def test_prepare_demo_skips_priya_and_is_idempotent(seeded_store, monkeypatch) -> None:
+    """Preparing the synthetic cases leaves Priya untouched and skips saved results."""
+    calls = []
+
+    def fake_assessment(application_id: str, store: SQLiteStore) -> None:
+        calls.append(application_id)
+        save_assessment_decision(
+            application_id,
+            "Approve",
+            "{}",
+            "2026-10-27T12:00:00",
+            store,
+        )
+
+    monkeypatch.setattr(overview, "run_assessment", fake_assessment)
+    assessed, skipped = overview._prepare_demo(seeded_store)
+    assert assessed == 5
+    assert skipped == 1
+    assert len(calls) == 5
+
+    applications = overview.list_applications({"demo_only": True}, seeded_store)
+    priya = applications.loc[applications["applicant"] == "Priya Menon"].iloc[0]
+    assert pd.isna(priya["ai_recommendation"])
+
+    repeated_assessed, repeated_skipped = overview._prepare_demo(seeded_store)
+    assert repeated_assessed == 0
+    assert repeated_skipped == 6
+    assert len(calls) == 5
 
 
 def test_badge_helper_output() -> None:

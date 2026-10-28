@@ -233,7 +233,7 @@ def test_review_queue_prioritizes_declines_then_referrals(review_store) -> None:
 
 @pytest.mark.parametrize("application_id", PERSONA_IDS)
 def test_human_review_page_renders_each_persona(review_store, application_id) -> None:
-    """The three-column human review workspace renders every persona."""
+    """The decision-first human review workspace renders every persona."""
     script = (
         "import streamlit as st\n"
         "from loanpilot.pages.human_review import render\n"
@@ -244,7 +244,8 @@ def test_human_review_page_renders_each_persona(review_store, application_id) ->
     app = AppTest.from_string(script).run()
     assert not app.exception
     assert app.title[0].value == "Human Review"
-    assert any(button.label == "Submit human decision" for button in app.button)
+    assert any(button.label == "Submit decision" for button in app.button)
+    assert any(button.label == "Go to Human Review" for button in app.button) is False
 
 
 def test_recorded_badges_distinguish_authored_and_live_runs() -> None:

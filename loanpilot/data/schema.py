@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS cur_customers (
     net_monthly_income REAL NOT NULL,
     pan_demo_id TEXT NOT NULL UNIQUE,
     kyc_status TEXT NOT NULL,
-    relationship_since TEXT NOT NULL
+    relationship_since TEXT NOT NULL,
+    mobile TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS cur_accounts (
     account_id TEXT PRIMARY KEY,
@@ -263,3 +264,10 @@ def create_schema(store: SQLiteStore) -> None:
     """Create all demo data tables, indexes, and the serving view."""
     with store.connection() as connection:
         connection.executescript(SCHEMA_SQL)
+        customer_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(cur_customers)")
+        }
+        if "mobile" not in customer_columns:
+            connection.execute(
+                "ALTER TABLE cur_customers ADD COLUMN mobile TEXT NOT NULL DEFAULT ''"
+            )

@@ -162,4 +162,4 @@ def test_assessment_page_renders_each_persona(
     app.button(key="run_assessment").click().run()
     assert not app.exception
     assert app.title[0].value == "AI Assessment"
-    assert any("Handed to Human Review" in element.value for element in app.success)
+    assert app.button(key=f"decision_review_{application_id}").label == "Go to Human Review"

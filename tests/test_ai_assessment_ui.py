@@ -99,5 +99,5 @@ def test_unassessed_persona_shows_run_assessment_state(tmp_path) -> None:
     app = _app(store, "APP-PERSONA-1").run()
     assert not app.exception
     assert any(item.value == "Assessment not run yet" for item in app.subheader)
-    assert any(button.label == "Run assessment" for button in app.button)
+    assert sum(button.label == "Run assessment" for button in app.button) == 1
     assert get_application("APP-PERSONA-1", store).iloc[0]["ai_recommendation"] is None

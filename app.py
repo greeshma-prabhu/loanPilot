@@ -5,7 +5,6 @@ import streamlit as st
 from loanpilot import config
 from loanpilot.badges import render_badge_legend
 from loanpilot.data.bootstrap import bootstrap_demo_data
-from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
 from loanpilot.navigation import NAVIGATION
 
@@ -35,13 +34,6 @@ def main() -> None:
             st.success("Missing sample documents were restored from synthetic data.")
         with st.expander("Implementation status", expanded=False):
             render_badge_legend()
-        if st.button("Reset demo data", width="stretch", help="Restore the synthetic sample cases."):
-            counts = seed_demo_data(store, reset=True)
-            count_text = ", ".join(
-                f"{table}: {count}" for table, count in counts.items()
-            )
-            st.toast(f"Demo data reset. {count_text}")
-
     navigation.run()
 
 

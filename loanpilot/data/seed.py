@@ -632,9 +632,14 @@ def validate_seeded_data(store: SQLiteStore) -> None:
     """Raise an explicit error if key dataset realism and integrity rules fail."""
     customer_count = store.query("SELECT COUNT(*) AS n FROM cur_customers").iloc[0, 0]
     application_count = store.query("SELECT COUNT(*) AS n FROM cur_applications").iloc[0, 0]
-    if customer_count != 500 or application_count != 66:
+    custom_count = store.query(
+        "SELECT COUNT(*) AS n FROM cur_applications "
+        "WHERE application_id LIKE 'APP-CUSTOM-%'"
+    ).iloc[0, 0]
+    if customer_count != 500 + custom_count or application_count != 66 + custom_count:
         raise ValueError(
-            f"Expected 500 customers and 66 applications; got "
+            f"Expected {500 + custom_count} customers and "
+            f"{66 + custom_count} applications; got "
             f"{customer_count} and {application_count}"
         )
     broken_foreign_keys = store.query("PRAGMA foreign_key_check")
@@ -705,6 +710,13 @@ def seed_demo_data(
         store,
         documents_dir=project_root / "data" / "documents",
         project_root=project_root,
+    )
+    from loanpilot.data.custom_cases import seed_custom_cases
+
+    seed_custom_cases(
+        store,
+        project_root=project_root,
+        path=None,
     )
     validate_seeded_data(store)
     validate_persona_documents(store, project_root=project_root)

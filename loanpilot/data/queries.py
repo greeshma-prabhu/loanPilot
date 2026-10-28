@@ -851,6 +851,48 @@ def overview_attention_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
     )
 
 
+def overview_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Return the six personas and permanent/custom intake cases for the dashboard."""
+    return _store(store).query(
+        """
+        SELECT a.application_id, a.persona_key, a.stage, a.requested_amount,
+               c.name AS applicant, d.ai_recommendation, d.human_decision,
+               d.is_override, d.decided_by, d.human_reason, d.decided_at
+        FROM cur_applications a
+        JOIN cur_customers c ON c.customer_id = a.customer_id
+        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE a.persona_key IS NOT NULL
+           OR a.application_id LIKE 'APP-CUSTOM-%'
+        ORDER BY CASE WHEN a.persona_key IS NOT NULL THEN 0 ELSE 1 END,
+                 a.persona_key, a.application_id
+        """
+    )
+
+
+def overview_historical_metrics(store: SQLiteStore | None = None) -> dict[str, int | float]:
+    """Summarize only the 60 historical applications, outside the active pipeline."""
+    row = _store(store).query(
+        """
+        SELECT COUNT(*) AS case_count,
+               SUM(CASE WHEN d.ai_recommendation = 'Approved' THEN 1 ELSE 0 END)
+                   AS approved_count,
+               SUM(CASE WHEN d.ai_recommendation = 'Declined' THEN 1 ELSE 0 END)
+                   AS declined_count,
+               SUM(CASE WHEN d.ai_recommendation = 'Referred' THEN 1 ELSE 0 END)
+                   AS referred_count,
+               AVG(julianday(d.decided_at) - julianday(a.submitted_at))
+                   AS average_processing_days
+        FROM cur_applications a
+        JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE a.application_id LIKE 'APP-HIST-%'
+        """
+    ).iloc[0]
+    return {
+        key: 0 if pd.isna(value) else value.item() if hasattr(value, "item") else value
+        for key, value in row.items()
+    }
+
+
 def create_intake_application(
     applicant: Mapping[str, Any],
     application: Mapping[str, Any],

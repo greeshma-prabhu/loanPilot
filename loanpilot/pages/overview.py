@@ -1,6 +1,4 @@
-"""Database-backed LoanPilot portfolio and workflow dashboard."""
-
-import json
+"""Command-centre overview for current demo and custom applications."""
 
 import pandas as pd
 import plotly.express as px
@@ -8,323 +6,362 @@ import streamlit as st
 
 from loanpilot import config
 from loanpilot.agent.orchestrator import run_assessment
-from loanpilot.components import render_decision_card, render_why
+from loanpilot.data.custom_cases import remove_custom_cases
 from loanpilot.data.queries import (
     list_applications,
     overview_attention_cases,
-    overview_metrics,
-    overview_pipeline_counts,
-    overview_recommendation_counts,
-    overview_risk_counts,
+    overview_cases,
+    overview_historical_metrics,
 )
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.ledger import ledger_counts, ledger_frame
-from loanpilot.theme import render_disclaimer, render_header
+from loanpilot.theme import format_datetime, render_disclaimer, render_header
+
+_CLOSED_STAGES = {"Rejected", "Disbursed (simulated)", "Awaiting documents"}
+_STORIES = {
+    "PERSONA-1": "Consistent income and documents; strong bureau profile.",
+    "PERSONA-2": "Borderline FOIR with one older late payment.",
+    "PERSONA-3": "Monthly obligations exceed the illustrative limit.",
+    "PERSONA-4": "Payslip, employer and salary-credit evidence differ.",
+    "PERSONA-5": "Thin bureau file; a capped amount may be considered.",
+    "PERSONA-6": "Short current-job tenure despite long work history.",
+}
 
 
-def _start_guided_demo(store: SQLiteStore) -> None:
-    """Open Priya's seeded case in the Applications workspace."""
+def _demo_custom_cases(store: SQLiteStore) -> pd.DataFrame:
+    """Return only the six named personas and custom intake records."""
+    cases = overview_cases(store)
+    if cases.empty:
+        return cases
+    cases["case_type"] = cases.apply(
+        lambda row: "Custom case" if str(row["application_id"]).startswith("APP-CUSTOM-") else "Persona",
+        axis=1,
+    )
+    return cases
+
+
+def _prepare_demo(store: SQLiteStore) -> tuple[int, int]:
+    """Assess missing persona/custom cases idempotently while reserving Priya."""
+    counts = store.table_counts()
+    if not counts.get("cur_applications", 0):
+        seed_demo_data(store)
+    cases = _demo_custom_cases(store)
+    assessed = 0
+    skipped = 0
+    for _, row in cases.iterrows():
+        if row["applicant"] == "Priya Menon":
+            skipped += 1
+            continue
+        if pd.notna(row["ai_recommendation"]) and str(row["ai_recommendation"]).strip():
+            skipped += 1
+            continue
+        run_assessment(str(row["application_id"]), store)
+        assessed += 1
+    return assessed, skipped
+
+
+def _start_demo(store: SQLiteStore) -> None:
+    """Assess missing demo cases except Priya, then open her case."""
     from loanpilot.navigation import OPERATE_PAGES
 
-    sample = list_applications({"demo_only": True}, store)
-    priya = sample.loc[sample["applicant"] == "Priya Menon"]
+    _prepare_demo(store)
+    cases = _demo_custom_cases(store)
+    priya = cases.loc[cases["applicant"] == "Priya Menon"]
     if priya.empty:
-        st.session_state["overview_notice"] = "Priya's demo case is not loaded yet."
+        st.session_state["overview_notice"] = "Priya Menon is not present in the demo data."
         return
     application_id = str(priya.iloc[0]["application_id"])
     st.session_state["selected_application"] = application_id
     st.switch_page(OPERATE_PAGES["applications"])
 
 
-def _open_review_case(application_id: str) -> None:
-    """Open Human Review with a selected queue case."""
+def _open_case(application_id: str) -> None:
+    """Select a case and open its Applications workspace."""
     from loanpilot.navigation import OPERATE_PAGES
 
-    st.session_state["review_application"] = application_id
     st.session_state["selected_application"] = application_id
-    st.switch_page(OPERATE_PAGES["human_review"])
+    st.switch_page(OPERATE_PAGES["applications"])
 
 
-def _prepare_demo(store: SQLiteStore, leave_priya_unassessed: bool = True) -> tuple[int, int]:
-    """Assess missing persona cases once, optionally reserving Priya for a live demo."""
-    counts = store.table_counts()
-    if not counts.get("cur_applications", 0):
-        if counts.get("cur_customers", 0):
-            raise ValueError(
-                "The database has customers but no applications; demo cases were not reset."
-            )
-        seed_demo_data(store)
-
-    cases = list_applications({"demo_only": True}, store)
-    if cases.empty:
-        raise ValueError("No demo personas are available to assess.")
-    assessed = 0
-    skipped = 0
-    for _, case in cases.iterrows():
-        if leave_priya_unassessed and case["applicant"] == "Priya Menon":
-            skipped += 1
-            continue
-        recommendation = case["ai_recommendation"]
-        if pd.notna(recommendation) and str(recommendation).strip():
-            skipped += 1
-            continue
-        run_assessment(str(case["application_id"]), store)
-        assessed += 1
-    return assessed, skipped
+def _reset_demo(store: SQLiteStore) -> None:
+    """Rebuild seeded personas, historical data and permanent custom cases."""
+    counts = seed_demo_data(store, reset=True)
+    st.session_state.pop("selected_application", None)
+    st.toast(f"Demo data reset. {counts.get('cur_applications', 0)} cases restored.")
 
 
-def _run_prepare_demo(store: SQLiteStore) -> None:
-    """Run the Overview action and report the resulting case counts."""
-    try:
-        assessed, skipped = _prepare_demo(
-            store,
-            bool(st.session_state.get("prepare_leave_priya_unassessed", True)),
-        )
-    except ValueError as error:
-        st.error(f"Could not prepare demo cases: {error}")
+def _remove_custom_and_reset(store: SQLiteStore) -> None:
+    """Delete permanent custom definitions only after explicit confirmation."""
+    if not st.session_state.get("confirm_remove_custom_cases"):
+        st.session_state["custom_case_notice"] = "Confirm removal before deleting permanent custom cases."
         return
-    st.toast(
-        f"Demo ready: {assessed} new assessments, {skipped} unchanged or reserved cases."
-    )
+    remove_custom_cases()
+    _reset_demo(store)
+    st.session_state["custom_case_notice"] = "Permanent custom cases were removed."
 
 
-def _render_prepare_demo(store: SQLiteStore, assessment_count: int) -> None:
-    """Show the repeat-safe assessment action and its default Priya reservation."""
-    with st.container(border=True):
-        st.subheader("Prepare demo")
-        if assessment_count == 0:
-            st.info(
-                "No AI assessments are saved yet. Prepare the sample cases here; "
-                "Priya can remain unassessed for a live walkthrough."
-            )
-        else:
-            st.caption(
-                "Fill in missing demo assessments. Saved outcomes are kept unchanged."
-            )
-        st.checkbox(
-            "Leave Priya Menon unassessed for a live walkthrough",
-            value=True,
-            key="prepare_leave_priya_unassessed",
+def _render_case_table(cases: pd.DataFrame) -> None:
+    """Display every demo/custom case with its current human-readable state."""
+    rows = []
+    for _, case in cases.iterrows():
+        story = (
+            "Permanent synthetic intake case."
+            if case["case_type"] == "Custom case"
+            else _STORIES.get(case["persona_key"], "Synthetic persona application.")
         )
-        st.button(
-            "Prepare demo",
-            on_click=_run_prepare_demo,
-            args=(store,),
-            key="prepare_demo",
-            type="primary",
-            width="stretch",
+        rows.append(
+            {
+                "Applicant": case["applicant"],
+                "Story": story,
+                "Stage": case["stage"],
+                "AI recommendation": (
+                    case["ai_recommendation"]
+                    if pd.notna(case["ai_recommendation"])
+                    else "—"
+                ),
+                "Human decision": (
+                    case["human_decision"]
+                    if pd.notna(case["human_decision"])
+                    else "—"
+                ),
+                "Override": (
+                    "Yes" if pd.notna(case["is_override"]) and bool(case["is_override"])
+                    else "No" if pd.notna(case["human_decision"])
+                    else "—"
+                ),
+                "Case type": case["case_type"],
+            }
         )
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
-def _render_kpis(
-    metrics: dict[str, float | int | None],
-    assessment_count: int,
-) -> None:
-    """Render portfolio and workflow figures sourced from the database."""
-    st.subheader("Portfolio at a glance")
-    st.caption("All figures use synthetic data from the local database.")
-    values = [
-        ("Apps in pipeline", f"{int(metrics['pipeline_count'] or 0):,}"),
-        ("AI approves", f"{int(metrics['approve_count'] or 0):,}" if assessment_count else "—"),
-        ("AI referrals", f"{int(metrics['refer_count'] or 0):,}" if assessment_count else "—"),
-        ("AI declines", f"{int(metrics['decline_count'] or 0):,}" if assessment_count else "—"),
-        (
-            "Avg. historical time",
-            (
-                f"{float(metrics['historical_processing_hours']) / 24:.1f} days"
-                if metrics["historical_processing_hours"] is not None
-                else "—"
-            ),
-        ),
-        ("Human reviews pending", f"{int(metrics['pending_review_count'] or 0):,}"),
-    ]
-    for offset in range(0, len(values), 3):
-        columns = st.columns(3)
-        for column, (label, value) in zip(
-            columns, values[offset : offset + 3], strict=True
-        ):
-            with column:
-                st.metric(label, value, help="Computed from synthetic data in the local database.")
-                if label.startswith("AI ") and assessment_count == 0:
-                    st.caption("No assessments yet")
-
-
-def _render_charts(store: SQLiteStore) -> None:
-    """Render pipeline, recommendation, and risk charts from query results."""
-    pipeline = overview_pipeline_counts(store)
-    recommendations = overview_recommendation_counts(store)
-    risks = overview_risk_counts(store)
-    left, middle, right = st.columns(3)
+def _render_charts(cases: pd.DataFrame, store: SQLiteStore) -> None:
+    """Render the two current-case charts and tuck risk distribution away."""
+    if cases.empty:
+        st.info("Case charts will appear when demo or custom cases are available.")
+        return
+    open_cases = cases.loc[~cases["stage"].isin(_CLOSED_STAGES)]
+    left, right = st.columns(2)
     with left:
-        st.markdown("#### Pipeline by stage")
-        if pipeline.empty:
-            st.info("No applications are currently in the pipeline.")
+        st.markdown("#### Open cases by stage")
+        counts = open_cases.groupby("stage", dropna=False).size().rename("Cases").reset_index()
+        if counts.empty:
+            st.info("There are no open cases.")
         else:
-            figure = px.funnel(
-                pipeline,
-                x="application_count",
-                y="stage",
-                labels={"application_count": "Applications", "stage": "Stage"},
-                color_discrete_sequence=["#16817b"],
+            st.plotly_chart(
+                px.bar(counts, x="stage", y="Cases", labels={"stage": "Stage"}),
+                width="stretch",
+                key="overview_open_stages",
             )
-            figure.update_layout(margin=dict(l=4, r=8, t=8, b=4), height=310)
-            st.plotly_chart(figure, width="stretch", key="overview_pipeline")
-    with middle:
-        st.markdown("#### AI decision mix")
-        if recommendations.empty:
-            st.info("No AI recommendations have been saved.")
-        else:
-            figure = px.pie(
-                recommendations,
-                names="recommendation",
-                values="application_count",
-                hole=0.56,
-                color="recommendation",
-                color_discrete_map={
-                    "Approve": "#23866f",
-                    "Refer": "#d69a2d",
-                    "Decline": "#b95c52",
-                },
-            )
-            figure.update_layout(margin=dict(l=4, r=4, t=8, b=4), height=310)
-            st.plotly_chart(figure, width="stretch", key="overview_decisions")
     with right:
-        st.markdown("#### Risk-band distribution")
-        if risks.empty:
-            st.info("Risk bands appear after an AI assessment.")
+        st.markdown("#### AI decision mix")
+        decision_counts = (
+            cases.loc[cases["ai_recommendation"].notna()]
+            .groupby("ai_recommendation")
+            .size()
+            .rename("Cases")
+            .reset_index()
+        )
+        if decision_counts.empty:
+            st.info("AI recommendations appear after assessment.")
         else:
-            figure = px.bar(
-                risks,
-                x="risk_band",
-                y="application_count",
-                color="risk_band",
-                color_discrete_map={
-                    "Low": "#23866f",
-                    "Medium": "#d69a2d",
-                    "High": "#b95c52",
-                },
-                labels={"risk_band": "Risk band", "application_count": "Cases"},
+            st.plotly_chart(
+                px.bar(
+                    decision_counts,
+                    x="ai_recommendation",
+                    y="Cases",
+                    color="ai_recommendation",
+                    color_discrete_map={
+                        "Approve": "#23866f",
+                        "Refer": "#d69a2d",
+                        "Decline": "#b95c52",
+                    },
+                    labels={"ai_recommendation": "AI recommendation"},
+                ),
+                width="stretch",
+                key="overview_decision_mix",
             )
-            figure.update_layout(
-                showlegend=False,
-                margin=dict(l=4, r=4, t=8, b=4),
-                height=310,
+    with st.expander("Risk-band distribution"):
+        risk = list_applications(store=store)
+        risk = risk.loc[
+            risk["persona_key"].notna()
+            | risk["application_id"].astype(str).str.startswith("APP-CUSTOM-")
+        ]
+        if risk.empty or risk["risk_band"].dropna().empty:
+            st.info("Risk bands appear after assessment.")
+        else:
+            risk_counts = risk.groupby("risk_band").size().rename("Cases").reset_index()
+            st.plotly_chart(
+                px.bar(risk_counts, x="risk_band", y="Cases", color="risk_band"),
+                width="stretch",
+                key="overview_risk_distribution",
             )
-            st.plotly_chart(figure, width="stretch", key="overview_risk")
+
+
+def _render_closed_summary(cases: pd.DataFrame) -> None:
+    """Show closed outcomes, agreement counts, and rejected-case context."""
+    closed = cases.loc[cases["stage"].isin(_CLOSED_STAGES)]
+    agreed = int(
+        (
+            cases["human_decision"].notna()
+            & ~cases["is_override"].fillna(0).astype(bool)
+        ).sum()
+    )
+    overridden = int(cases["is_override"].fillna(0).astype(bool).sum())
+    counts = (
+        ("Approved · awaiting payout", int((cases["stage"] == "Sanction").sum())),
+        ("Disbursed", int((cases["stage"] == "Disbursed (simulated)").sum())),
+        ("Rejected", int((cases["stage"] == "Rejected").sum())),
+        ("Escalated", int((cases["stage"] == "Escalated").sum())),
+        ("Awaiting documents", int((cases["stage"] == "Awaiting documents").sum())),
+        ("AI / human agreed", agreed),
+        ("Overridden", overridden),
+    )
+    st.subheader("Closed cases")
+    columns = st.columns(4)
+    for column, (label, value) in zip(columns, counts[:4], strict=True):
+        column.metric(label, value)
+    columns = st.columns(3)
+    for column, (label, value) in zip(columns, counts[4:], strict=True):
+        column.metric(label, value)
+    rejected = closed.loc[closed["stage"] == "Rejected"]
+    with st.expander(f"Rejected case details ({len(rejected)})"):
+        if rejected.empty:
+            st.caption("No rejected cases.")
+        else:
+            st.dataframe(
+                rejected[["applicant", "decided_by", "human_reason", "decided_at"]]
+                .rename(
+                    columns={
+                        "applicant": "Applicant",
+                        "decided_by": "Reviewer",
+                        "human_reason": "Reason",
+                        "decided_at": "Decision time",
+                    }
+                )
+                .assign(**{"Decision time": lambda frame: frame["Decision time"].map(format_datetime)}),
+                width="stretch",
+                hide_index=True,
+            )
 
 
 def _render_attention(store: SQLiteStore) -> None:
-    """Show review cases with direct callback navigation to the reviewer queue."""
+    """Show cases awaiting human review with direct case-open actions."""
     st.subheader("Needs your attention")
     cases = overview_attention_cases(store)
     if cases.empty:
         st.info("No cases are currently awaiting human review.")
         return
-    for _, row in cases.iterrows():
-        with st.expander(
-            f"{row['applicant']} · {row['ai_recommendation'] or 'Pending'} · "
-            f"{row['risk_band'] or 'Pending'}"
-        ):
-            render_decision_card(str(row["application_id"]), store, compact=True)
-            render_why(str(row["application_id"]), store, compact=True)
-            st.button(
-                "Open Human Review",
-                key=f"overview_review_{row['application_id']}",
-                on_click=_open_review_case,
-                args=(str(row["application_id"]),),
-            )
+    for _, case in cases.iterrows():
+        columns = st.columns([4, 1])
+        columns[0].write(
+            f"**{case['applicant']}** · {case['ai_recommendation'] or 'Pending'} · "
+            f"{case['risk_band'] or 'Pending'}"
+        )
+        columns[1].button(
+            "Open",
+            key=f"overview_open_{case['application_id']}",
+            on_click=_open_case,
+            args=(str(case["application_id"]),),
+        )
 
 
-def _render_turnaround_comparison() -> None:
-    """Show declared illustrative comparison assumptions and their provenance."""
-    with config.ILLUSTRATIVE_METRICS_PATH.open(encoding="utf-8") as metrics_file:
-        assumptions = json.load(metrics_file)
-    st.subheader("Turnaround comparison")
-    st.caption("Illustrative assumptions only.")
-    first, second = st.columns(2)
-    first.metric("Illustrative baseline", f"{float(assumptions['baseline_turnaround_days']):g} days")
-    second.metric("Illustrative demo workflow", f"{float(assumptions['demo_turnaround_days']):g} days")
-    st.caption(str(assumptions["source"]))
-
-
-def _render_implementation_status(store: SQLiteStore) -> None:
-    """Render ledger status totals and component notes."""
-    st.subheader("Implementation status")
-    counts = ledger_counts(store)
-    columns = st.columns(3)
-    for column, status in zip(columns, ("Real", "Simulated", "Planned"), strict=True):
-        column.metric(status, counts[status])
-    st.dataframe(ledger_frame(store), width="stretch", hide_index=True)
-
-
-def _render_closed_cases(metrics: dict[str, float | int | None]) -> None:
-    """Make parked and completed outcomes visible in a compact card."""
+def _render_historical(store: SQLiteStore) -> None:
+    """Keep the 60 historical synthetic outcomes separate from pipeline totals."""
+    historical = overview_historical_metrics(store)
     with st.container(border=True):
-        st.subheader("Closed cases")
-        columns = st.columns(3)
-        columns[0].metric("Rejected", int(metrics["rejected_count"] or 0))
-        columns[1].metric("Approved · awaiting payout", int(metrics["approved_count"] or 0))
-        columns[2].metric("Disbursed", int(metrics["disbursed_count"] or 0))
+        st.subheader("Historical portfolio · synthetic past cases")
+        st.caption("Historical cases are shown separately and are not part of the current pipeline.")
+        columns = st.columns(5)
+        for column, (label, value) in zip(
+            columns,
+            (
+                ("Cases", historical["case_count"]),
+                ("Approved", historical["approved_count"]),
+                ("Declined", historical["declined_count"]),
+                ("Referred", historical["referred_count"]),
+                ("Average processing", f"{float(historical['average_processing_days']):.1f} days"),
+            ),
+            strict=True,
+        ):
+            column.metric(label, value)
 
 
 def render(store: SQLiteStore | None = None) -> None:
-    """Render the portfolio dashboard using current database contents."""
+    """Render the single Overview command centre."""
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
-    render_header(
-        "Overview",
-        "A clearer view from application intake to human-reviewed outcome.",
-        "OPERATE  /  PORTFOLIO OVERVIEW",
-    )
+    render_header("Overview", "One command centre for the synthetic loan demo.", "OPERATE  /  COMMAND CENTRE")
     notice = st.session_state.pop("overview_notice", None)
     if notice:
         st.warning(notice)
-    count = int(store.table_counts().get("cur_applications", 0))
-    applications = list_applications({"demo_only": True}, store)
-    assessment_count = (
-        int(
-            (
-                applications["ai_recommendation"].notna()
-                & applications["ai_recommendation"].astype(str).str.strip().ne("")
-            ).sum()
-        )
-        if not applications.empty
-        else 0
+    st.button(
+        "Start demo with Priya Menon",
+        type="primary",
+        width="stretch",
+        key="start_guided_demo",
+        on_click=_start_demo,
+        args=(store,),
     )
-    _render_prepare_demo(store, assessment_count)
-    metrics = overview_metrics(store)
-    persisted_recommendations = sum(
-        int(metrics[key] or 0)
-        for key in ("approve_count", "refer_count", "decline_count")
-    )
-    _render_kpis(metrics, persisted_recommendations)
-    if count == 0:
-        st.info(
-            "No synthetic applications are loaded yet. Prepare demo creates the "
-            "sample portfolio and its assessments."
-        )
-        _render_implementation_status(store)
-        return
-    hero, action = st.columns([4, 1])
-    with hero:
-        st.markdown(
-            "#### One guided view of the personal-loan journey — from synthetic evidence to human review."
-        )
-        st.caption("AI recommends; a human reviewer decides.")
-    with action:
+
+    cases = _demo_custom_cases(store)
+    total = len(cases)
+    closed = int(cases["stage"].isin(_CLOSED_STAGES).sum()) if total else 0
+    open_count = total - closed
+    waiting = int((cases["stage"] == "Human Review").sum()) if total else 0
+    columns = st.columns(4)
+    for column, (label, value) in zip(
+        columns,
+        (
+            ("Total cases", total),
+            ("Open", open_count),
+            ("Closed", closed),
+            ("Waiting for human review", waiting),
+        ),
+        strict=True,
+    ):
+        column.metric(label, value, help="Six synthetic personas plus custom cases; historical cases excluded.")
+
+    st.subheader("Where every case stands")
+    if cases.empty:
+        st.info("No demo cases are loaded yet. Start demo to load the synthetic personas.")
+    else:
+        _render_case_table(cases)
+        ids = cases["application_id"].astype(str).tolist()
+        names = dict(zip(ids, cases["applicant"].astype(str), strict=True))
+        st.selectbox("Open a case", ids, format_func=lambda value: names[value], key="overview_case")
         st.button(
-            "Start guided demo",
-            on_click=_start_guided_demo,
-            key="start_guided_demo",
-            args=(store,),
-            type="primary",
-            width="stretch",
+            "Open case",
+            on_click=_open_case,
+            args=(st.session_state.get("overview_case", ids[0]),),
+            key="overview_open_selected",
         )
-    _render_charts(store)
+
+    _render_charts(cases, store)
+    _render_closed_summary(cases)
     _render_attention(store)
-    _render_closed_cases(metrics)
-    _render_turnaround_comparison()
-    _render_implementation_status(store)
+    _render_historical(store)
+    with st.expander("Implementation status"):
+        ledger_counts(store)
+        st.dataframe(ledger_frame(store), width="stretch", hide_index=True)
+    with st.expander("Presenter controls"):
+        st.button(
+            "Reset demo data",
+            key="overview_reset_demo",
+            on_click=_reset_demo,
+            args=(store,),
+        )
+        st.caption("Remove permanent custom cases from the saved list and reset the database.")
+        st.checkbox("Confirm removal of all custom cases", key="confirm_remove_custom_cases")
+        st.button(
+            "Remove all custom cases",
+            key="remove_custom_cases",
+            on_click=_remove_custom_and_reset,
+            args=(store,),
+        )
+        custom_notice = st.session_state.pop("custom_case_notice", None)
+        if custom_notice:
+            st.info(custom_notice)

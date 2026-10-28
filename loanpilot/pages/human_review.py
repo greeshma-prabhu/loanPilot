@@ -30,7 +30,11 @@ from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
 from loanpilot.components import render_decision_card, render_why
 
-REVIEWERS = ("Aarav Kulkarni (Credit Analyst)", "Nisha Desai (Credit Manager)")
+REVIEWERS = (
+    "Aarav Kulkarni (Credit Analyst)",
+    "Nisha Desai (Credit Manager)",
+    "Greeshma Prabhu",
+)
 ACTIONS = {
     "approve": "Approve",
     "approve_with_conditions": "Approve with conditions",
@@ -280,6 +284,19 @@ def _render_result_card(application_id: str, store: SQLiteStore) -> None:
         key="review_clear_result",
         on_click=lambda: st.session_state.pop("review_result_application_id", None),
     )
+    st.button(
+        "Back to Overview",
+        key="review_back_overview",
+        on_click=_back_to_overview,
+    )
+
+
+def _back_to_overview() -> None:
+    """Return to the portfolio command centre after a saved decision."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    st.session_state.pop("review_result_application_id", None)
+    st.switch_page(OPERATE_PAGES["overview"])
 
 
 def _render_decision_panel(
@@ -296,6 +313,12 @@ def _render_decision_panel(
     action_key = f"review_action_{application_id}"
     reviewer_key = f"reviewer_{application_id}"
     reason_key = f"decision_reason_{application_id}"
+    default_action = {
+        "Approve": "approve",
+        "Refer": "refer_up",
+        "Decline": "reject",
+    }.get(str(summary["recommendation"]), "refer_up")
+    st.session_state.setdefault(action_key, default_action)
     amount = float(summary["application"]["requested_amount"])
     tenure = int(summary["application"]["tenure_months"])
     rate = pricing_rate(score)

@@ -12,6 +12,7 @@ from loanpilot.badges import implementation_badge
 from loanpilot.components import (
     fmt_inr,
     render_decision_card,
+    render_human_review_button,
     render_key_numbers,
     render_why,
     status_chip,
@@ -328,6 +329,7 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
     _render_pipeline(len(result.get("trace", [])))
     st.caption("Policy outcomes and financial calculations are deterministic; language output cannot change them.")
     render_decision_card(application_id, store)
+    render_human_review_button(application_id)
     render_why(application_id, store)
     st.markdown("### Key numbers")
     render_key_numbers(application_id, store)
@@ -421,10 +423,6 @@ def render(store: SQLiteStore | None = None) -> None:
         st.code(str(selected_application))
     if result is None:
         _render_pipeline(-1)
-        render_decision_card(
-            selected_application,
-            store,
-            show_run_button=True,
-        )
+        render_decision_card(selected_application, store)
     else:
         _render_assessment(result, store)

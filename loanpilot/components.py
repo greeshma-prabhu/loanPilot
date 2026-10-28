@@ -199,13 +199,16 @@ def _open_human_review(application_id: str) -> None:
     st.switch_page(OPERATE_PAGES["human_review"])
 
 
-def _run_assessment_callback(application_id: str, store: Any = None) -> None:
-    """Run the saved deterministic assessment through the page empty-state action."""
-    from loanpilot.agent.orchestrator import run_assessment
-
-    result = run_assessment(application_id, store)
-    st.session_state["assessment_result"] = result
-    st.session_state["assessment_application_id"] = application_id
+def render_human_review_button(application_id: str) -> None:
+    """Render a full-width handoff button below a decision card."""
+    st.button(
+        "Go to Human Review",
+        key=f"decision_review_{application_id}",
+        on_click=_open_human_review,
+        args=(application_id,),
+        type="primary",
+        width="stretch",
+    )
 
 
 def render_decision_card(
@@ -213,7 +216,6 @@ def render_decision_card(
     store: Any = None,
     *,
     compact: bool = False,
-    show_run_button: bool = False,
 ) -> None:
     """Render the shared decision-first summary for one persisted assessment."""
     from loanpilot.agent.policy_engine import pricing_rate
@@ -223,14 +225,6 @@ def render_decision_card(
         with st.container(border=True):
             st.subheader("Assessment not run yet")
             st.info("Run the assessment to see the recommendation and key numbers.")
-            if show_run_button:
-                st.button(
-                    "Run assessment",
-                    key=f"decision_run_{application_id}",
-                    on_click=_run_assessment_callback,
-                    args=(application_id, store),
-                    type="primary",
-                )
         return
 
     recommendation = str(model["recommendation"] or "Unavailable")
@@ -286,13 +280,6 @@ def render_decision_card(
             f'<div class="lp-decision-facts {"compact" if compact else ""}">{facts_html}</div>',
             unsafe_allow_html=True,
         )
-        if not compact:
-            st.button(
-                "Go to Human Review",
-                key=f"decision_review_{application_id}",
-                on_click=_open_human_review,
-                args=(application_id,),
-            )
     if model.get("explanation"):
         st.markdown(
             f"**Explanation** · {status_chip(str(model['explanation_mode']), 'info')}",

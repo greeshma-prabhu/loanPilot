@@ -67,7 +67,7 @@ def test_app_runs_without_exception() -> None:
     """The navigation entry point should render its default page."""
     app = AppTest.from_file(str(APP_PATH)).run()
     assert not app.exception
-    assert any(button.label == "Reset demo data" for button in app.button)
+    assert any(button.label == "Start demo with Priya Menon" for button in app.button)
 
 
 @pytest.mark.parametrize(
@@ -86,16 +86,13 @@ def test_each_page_loads_for_empty_and_seeded_data(module, data_state, tmp_path,
     assert not app.exception, f"{module.__name__} with {data_state} data"
 
 
-def test_overview_empty_state_uses_dashes_and_prepare_button(tmp_path) -> None:
-    """An empty dashboard makes the next action clear without fake zero decisions."""
+def test_overview_empty_state_has_single_start_demo_action(tmp_path) -> None:
+    """An empty dashboard directs the presenter to its single command-centre action."""
     store = SQLiteStore(tmp_path / "overview-empty.db")
     create_schema(store)
     app = _render_page(overview, store).run()
     assert not app.exception
-    assert any(button.label == "Prepare demo" for button in app.button)
-    assert app.session_state["prepare_leave_priya_unassessed"] is True
-    metric_values = {metric.value for metric in app.metric}
-    assert "—" in metric_values
+    assert sum(button.label == "Start demo with Priya Menon" for button in app.button) == 1
 
 
 def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None:
@@ -110,7 +107,7 @@ def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None
 
 
 def test_prepare_demo_skips_priya_and_is_idempotent(seeded_store, monkeypatch) -> None:
-    """Preparing the synthetic cases leaves Priya untouched and skips saved results."""
+    """Starting demo assesses other cases and leaves Priya untouched."""
     calls = []
 
     def fake_assessment(application_id: str, store: SQLiteStore) -> None:

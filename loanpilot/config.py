@@ -11,6 +11,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 DATA_DIR = PROJECT_ROOT / "data"
 DATABASE_PATH = DATA_DIR / "loanpilot.db"
 DOCUMENTS_DIR = DATA_DIR / "documents"
+CUSTOM_CASES_PATH = PROJECT_ROOT / "loanpilot" / "data" / "custom_cases.json"
 POLICY_PATH = PROJECT_ROOT / "loanpilot" / "policy" / "credit_policy.json"
 ILLUSTRATIVE_METRICS_PATH = (
     PROJECT_ROOT / "loanpilot" / "policy" / "illustrative_metrics.json"

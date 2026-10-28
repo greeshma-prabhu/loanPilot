@@ -2,26 +2,19 @@
 
 from datetime import date, datetime
 from io import BytesIO
+import json
 from pathlib import Path
 import random
 import re
-import shutil
-from typing import Any
 import uuid
 
 import streamlit as st
+from fpdf import FPDF
 
 from loanpilot import config
 from loanpilot.agent.policy_engine import pricing_rate
 from loanpilot.components import fmt_inr
-from loanpilot.data.queries import (
-    create_intake_application,
-    get_application,
-    get_documents,
-    get_existing_loans,
-    list_applications,
-)
-from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.queries import create_intake_application, get_application
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
@@ -29,10 +22,16 @@ from loanpilot.theme import render_disclaimer, render_header
 _STEPS = ("Applicant", "Employment and income", "Loan request", "Documents")
 _PURPOSES = ("Home improvement", "Medical expenses", "Education", "Travel", "Other")
 _EMPLOYMENT_TYPES = ("Salaried", "Self-employed", "Other")
-_DOCUMENT_INPUTS = (
-    ("intake_payslip", "Payslip"),
-    ("intake_bank_statement", "Bank statement"),
-    ("intake_kyc_pdf", "KYC"),
+_DOC_TYPES = ("payslip", "bank_statement_summary", "kyc_sheet")
+_DOC_LABELS = {
+    "payslip": "Payslip",
+    "bank_statement_summary": "6-month bank statement summary",
+    "kyc_sheet": "KYC sheet",
+}
+_PROBLEMS = (
+    "Salary credits about 30% below the payslip",
+    "Payslip arithmetic does not add up",
+    "Employer name differs",
 )
 
 
@@ -43,501 +42,626 @@ def estimate_bureau_score(
     experience_months: int,
     pan: str,
 ) -> int | None:
-    """Create a stable synthetic score influenced by declared capacity and tenure."""
+    """Create a stable synthetic score influenced by capacity and tenure."""
     if experience_months < 12:
         return None
     ratio = existing_emi / income if income > 0 else 1.0
     seed = f"{pan}|{income:.2f}|{existing_emi:.2f}|{job_months}|{experience_months}"
-    stable_adjustment = random.Random(seed).randint(-8, 8)
+    adjustment = random.Random(seed).randint(-8, 8)
     score = 635 + (income / 1000 - 30) * 1.1 + min(job_months, 60) * 0.65
     score -= min(ratio, 1.5) * 110
-    return max(300, min(850, round(score + stable_adjustment)))
+    return max(300, min(850, round(score + adjustment)))
 
 
-def _initialize_form() -> None:
-    """Set form defaults before their widgets are created."""
-    defaults: dict[str, Any] = {
-        "intake_step": 0,
-        "intake_name": "",
-        "intake_dob": date(1990, 1, 1),
-        "intake_city": "",
-        "intake_pan": f"DEMO{uuid.uuid4().hex[:8].upper()}",
-        "intake_mobile": "",
-        "intake_employer": "",
-        "intake_employment_type": "Salaried",
-        "intake_job_months": 12,
-        "intake_experience_months": 12,
-        "intake_income": 50000.0,
-        "intake_existing_emi": 0.0,
-        "intake_amount": 200000.0,
-        "intake_tenure": 36,
-        "intake_purpose": "Other",
-        "intake_sample_persona": "",
-        "intake_sample_pack": False,
-        "intake_consent": False,
-        "intake_declaration": False,
-        "intake_error": "",
+def _initial_intake() -> dict:
+    """Return one canonical intake object independent of transient widgets."""
+    return {
+        "name": "",
+        "dob": date(1990, 1, 1).isoformat(),
+        "city": "",
+        "pan": f"DEMO{uuid.uuid4().hex[:8].upper()}",
+        "mobile": "",
+        "employer": "",
+        "employment_type": "Salaried",
+        "job_months": 12,
+        "experience_months": 12,
+        "income": 50000.0,
+        "existing_emi": 0.0,
+        "amount": 200000.0,
+        "tenure": 36,
+        "purpose": "Other",
+        "document_mode": "Generate synthetic documents from my entries",
+        "document_problem": False,
+        "problem_type": _PROBLEMS[0],
+        "uploads": {},
+        "consent": False,
+        "declaration": False,
+        "permanent": False,
     }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
 
 
-def _load_sample_applicant() -> None:
-    """Copy a persona profile into the intake widget state."""
-    application_id = st.session_state.get("intake_sample_persona")
-    if not application_id:
-        return
-    store = SQLiteStore()
-    application = get_application(application_id, store)
-    if application.empty:
-        st.session_state["intake_error"] = (
-            "The selected sample case is not available in this database."
-        )
-        return
-    case = application.iloc[0]
-    loan_rows = get_existing_loans(case["customer_id"], store)
-    st.session_state.update(
-        {
-            "intake_name": case["name"],
-            "intake_dob": date.fromisoformat(str(case["dob"])),
-            "intake_city": case["city"],
-            "intake_pan": f"DEMO-{case['persona_key']}",
-            "intake_mobile": "9000000000",
-            "intake_employer": case["employer"],
-            "intake_employment_type": case["employment_type"],
-            "intake_job_months": int(case["current_tenure_months"]),
-            "intake_experience_months": int(case["total_experience_months"]),
-            "intake_income": float(case["net_monthly_income"]),
-            "intake_amount": float(case["requested_amount"]),
-            "intake_tenure": int(case["tenure_months"]),
-            "intake_purpose": case["purpose"]
-            if case["purpose"] in _PURPOSES
-            else "Other",
-            "intake_existing_emi": float(loan_rows["emi"].sum()) if not loan_rows.empty else 0.0,
-            "intake_sample_pack": False,
-            "intake_error": "",
+def _intake() -> dict:
+    """Get or initialize the single source of form state."""
+    if "intake" not in st.session_state:
+        st.session_state["intake"] = _initial_intake()
+    return st.session_state["intake"]
+
+
+def _widget_values(step: int) -> dict:
+    """Read only the currently rendered step's widgets."""
+    keys_by_step = {
+        0: ("name", "dob", "city", "mobile"),
+        1: (
+            "employer",
+            "employment_type",
+            "job_months",
+            "experience_months",
+            "income",
+            "existing_emi",
+        ),
+        2: ("amount", "tenure", "purpose"),
+    }
+    if step in keys_by_step:
+        values = {
+            key: st.session_state[f"intake_widget_{key}"]
+            for key in keys_by_step[step]
         }
-    )
+        if step == 0:
+            values["dob"] = values["dob"].isoformat()
+        return values
+    values = {
+        "document_mode": st.session_state["intake_widget_document_mode"],
+        "consent": st.session_state["intake_widget_consent"],
+        "declaration": st.session_state["intake_widget_declaration"],
+        "permanent": st.session_state["intake_widget_permanent"],
+        "document_problem": st.session_state["intake_widget_document_problem"],
+        "problem_type": st.session_state["intake_widget_problem_type"],
+    }
+    uploads = {}
+    if values["document_mode"] == "Upload my own PDFs":
+        for doc_type in _DOC_TYPES:
+            uploads[doc_type] = st.session_state.get(f"intake_upload_{doc_type}")
+    values["uploads"] = uploads
+    return values
 
 
-def _go_back() -> None:
-    """Move to the preceding intake step."""
-    st.session_state["intake_step"] = max(0, st.session_state["intake_step"] - 1)
-    st.session_state["intake_error"] = ""
+def _step_data(step: int) -> dict:
+    """Overlay current widget values on the saved intake for validation."""
+    return {**_intake(), **_widget_values(step)}
 
 
-def _validate_step(step: int) -> str:
-    """Return one concise inline validation message for the active step."""
-    state = st.session_state
+def _validate(data: dict, step: int) -> str:
+    """Return a short error when the active step is incomplete or invalid."""
     if step == 0:
-        if not state["intake_name"].strip() or not state["intake_city"].strip():
-            return "Enter the applicant name and city."
-        if not re.fullmatch(r"DEMO[A-Z0-9-]{4,24}", state["intake_pan"].strip().upper()):
-            return "Use a synthetic PAN identifier beginning with DEMO."
-        if not re.fullmatch(r"\d{10}", state["intake_mobile"].strip()):
-            return "Enter a 10-digit demo mobile number."
-        if state["intake_dob"] >= date.today():
-            return "Date of birth must be in the past."
+        if not data["name"].strip() or not data["city"].strip():
+            return "Name and city are required."
+        dob = date.fromisoformat(str(data["dob"]))
+        today = date.today()
+        age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+        if not 18 <= age <= 75:
+            return "Applicant age must be between 18 and 75."
+        if not re.fullmatch(r"\d{10}", str(data["mobile"]).strip()):
+            return "Enter a 10-digit mobile number."
     elif step == 1:
-        if not state["intake_employer"].strip():
-            return "Enter an employer."
-        if int(state["intake_job_months"]) > int(state["intake_experience_months"]):
-            return "Current-job tenure cannot exceed total work experience."
-        if float(state["intake_income"]) <= 0 or int(state["intake_experience_months"]) < 0:
-            return "Income must be positive and experience cannot be negative."
+        if not data["employer"].strip():
+            return "Employer is required."
+        if not data["employment_type"]:
+            return "Select an employment type."
+        if int(data["job_months"]) < 0 or int(data["experience_months"]) < 0:
+            return "Experience values cannot be negative."
+        if int(data["job_months"]) > int(data["experience_months"]):
+            return "Current-job months cannot exceed total experience."
+        if float(data["income"]) <= 0 or float(data["existing_emi"]) < 0:
+            return "Income must be above zero; EMIs cannot be negative."
     elif step == 2:
-        if float(state["intake_amount"]) <= 0:
-            return "Loan amount must be greater than zero."
+        if float(data["amount"]) <= 0:
+            return "Loan amount must be above zero."
+        if not 12 <= int(data["tenure"]) <= 60:
+            return "Tenure must be between 12 and 60 months."
+        if data["purpose"] not in _PURPOSES:
+            return "Select a loan purpose."
     elif step == 3:
-        if not state["intake_consent"] or not state["intake_declaration"]:
-            return "Consent and the synthetic-data declaration are required."
-        if not state["intake_sample_pack"] and any(
-            state.get(key) is None for key, _ in _DOCUMENT_INPUTS
+        if data["document_mode"] == "Upload my own PDFs" and any(
+            data["uploads"].get(doc_type) is None for doc_type in _DOC_TYPES
         ):
-            return "Upload all three PDFs or attach a persona sample pack."
+            return "Upload a PDF for each required document."
+        if not data["consent"] or not data["declaration"]:
+            return "Both consent and declaration are required."
     return ""
 
 
-def _go_next() -> None:
-    """Validate the current step and move forward when it is complete."""
-    step = int(st.session_state["intake_step"])
-    error = _validate_step(step)
+def _step_transition(step: int, direction: int) -> None:
+    """Save the current step values before moving to another step."""
+    current = _intake()
+    values = _widget_values(step)
+    updated = {**current, **values}
+    error = _validate(updated, step) if direction > 0 else ""
+    st.session_state["intake"] = updated
     st.session_state["intake_error"] = error
     if not error:
-        st.session_state["intake_step"] = min(len(_STEPS) - 1, step + 1)
+        st.session_state["intake_step"] = min(3, max(0, step + direction))
 
 
-def _use_sample_pack() -> None:
-    """Select the sample persona's registered documents for this new case."""
-    if not st.session_state.get("intake_sample_persona"):
-        st.session_state["intake_error"] = "Select a sample applicant before using a sample pack."
-        return
-    st.session_state["intake_sample_pack"] = True
-    st.session_state["intake_error"] = ""
+def _pdf_bytes(title: str, lines: list[str]) -> bytes:
+    """Create a one-page, watermarked synthetic PDF in memory."""
+    pdf = FPDF()
+    pdf.set_title(title)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(25, 65, 62)
+    pdf.cell(0, 9, "Aarambh Bank | Synthetic sample document", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(15, 118, 110)
+    pdf.line(10, 20, pdf.w - 10, 20)
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(210, 220, 218)
+    with pdf.rotation(45, x=pdf.w / 2, y=pdf.h / 2):
+        pdf.text(x=22, y=pdf.h / 2, text="SYNTHETIC SAMPLE, DEMO ONLY")
+    pdf.set_text_color(30, 40, 40)
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_xy(10, 35)
+    for line in lines:
+        pdf.multi_cell(
+            190,
+            7,
+            text=line.encode("latin-1", "replace").decode("latin-1"),
+        )
+    return bytes(pdf.output())
 
 
-def _load_sample_cases(store: SQLiteStore) -> None:
-    """Load persona data when an empty database has no sample applicants."""
-    if store.table_counts().get("cur_applications", 0):
-        st.warning("Sample data was not loaded because this database now contains applications.")
-        return
-    counts = seed_demo_data(store)
-    st.toast(
-        "Synthetic sample cases loaded. "
-        + ", ".join(f"{table}: {count}" for table, count in counts.items())
-    )
+def _document_texts(data: dict) -> dict[str, str]:
+    """Build consistent synthetic document text, with an optional chosen mismatch."""
+    income = float(data["income"])
+    deductions = round(income * 0.18, 2)
+    gross = income + deductions
+    salary_average = income
+    employer = str(data["employer"]).strip()
+    issue = data["problem_type"] if data["document_problem"] else ""
+    if issue == _PROBLEMS[0]:
+        salary_average = round(income * 0.70, 2)
+    elif issue == _PROBLEMS[1]:
+        gross += 5000
+    elif issue == _PROBLEMS[2]:
+        employer = f"{employer} Demo Services"
+    money = lambda value: f"Rs {value:,.2f}"
+    common = [
+        f"Applicant: {data['name']}",
+        f"City: {data['city']}",
+        "Document classification: SYNTHETIC SAMPLE, DEMO ONLY",
+    ]
+    return {
+        "payslip": "\n".join(
+            [
+                "PERSONAL LOAN DEMO - PAYSLIP",
+                *common,
+                f"Employer on payslip: {employer}",
+                "Pay month: September 2026",
+                f"Gross pay: {money(gross)}",
+                f"Deductions: {money(deductions)}",
+                f"Net pay: {money(income)}",
+            ]
+        ),
+        "bank_statement_summary": "\n".join(
+            [
+                "PERSONAL LOAN DEMO - BANK STATEMENT SUMMARY",
+                *common,
+                "Period: April 2026 to September 2026",
+                f"Average monthly salary credits: {money(salary_average)}",
+            ]
+        ),
+        "kyc_sheet": "\n".join(
+            [
+                "PERSONAL LOAN DEMO - KYC SUMMARY",
+                *common,
+                f"Employer: {data['employer']}",
+                f"PAN demo identifier: {data['pan']}",
+                "PAN status: Pending synthetic check",
+            ]
+        ),
+    }
 
 
 def _extract_pdf_text(content: bytes) -> tuple[str, str | None]:
-    """Extract PDF text, returning an explicit document flag for unreadable files."""
+    """Extract PDF text and return a visible flag instead of raising."""
     try:
         from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
+        from pypdf.errors import PdfReadError, PdfStreamError
     except ImportError:
         return "", "PDF text extraction is unavailable (pypdf is not installed)."
     try:
-        pages = PdfReader(BytesIO(content), strict=False).pages
-        text = "\n".join(page.extract_text() or "" for page in pages).strip()
-    except (PdfReadError, OSError, ValueError, TypeError) as error:
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages).strip()
+    except (OSError, ValueError, TypeError, PdfReadError, PdfStreamError) as error:
         return "", f"PDF could not be read: {type(error).__name__}"
-    if not text:
-        return "", "PDF contains no extractable text."
-    return text, None
+    return (text, None) if text else ("", "PDF contains no extractable text.")
 
 
-def _prepare_documents(
-    application_id: str,
-    store: SQLiteStore,
-) -> list[dict[str, str]]:
-    """Save uploaded or selected persona PDFs and prepare RAW document records."""
-    folder = config.DATA_DIR / "uploads" / application_id
+def _save_documents(application_id: str, data: dict) -> list[dict[str, str]]:
+    """Generate or register uploaded PDFs beneath the configured project root."""
+    folder = config.DOCUMENTS_DIR / application_id
     folder.mkdir(parents=True, exist_ok=True)
-    prepared: list[dict[str, str]] = []
-    if st.session_state.get("intake_sample_pack"):
-        sample_id = st.session_state.get("intake_sample_persona")
-        sample_docs = get_documents(sample_id, store)
-        if sample_docs.empty:
-            raise ValueError("The selected persona has no registered sample documents.")
-        for doc in sample_docs.to_dict("records"):
-            source = (config.PROJECT_ROOT / Path(doc["file_path"])).resolve()
-            if not source.is_relative_to(config.PROJECT_ROOT):
-                raise ValueError("Sample document path is outside the project root.")
-            if not source.is_file():
-                raise FileNotFoundError(f"Persona sample document is missing: {source}")
-            target = folder / Path(doc["file_name"]).name
-            shutil.copyfile(source, target)
-            prepared.append(
-                {
-                    "doc_type": doc["doc_type"],
-                    "file_name": target.name,
-                    "file_path": target.relative_to(config.PROJECT_ROOT).as_posix(),
-                    "text_content": doc["text_content"],
-                }
-            )
-        return prepared
-
-    input_to_type = {
-        "intake_payslip": "payslip",
-        "intake_bank_statement": "bank_statement_summary",
-        "intake_kyc_pdf": "kyc_sheet",
-    }
-    for key, label in _DOCUMENT_INPUTS:
-        uploaded = st.session_state.get(key)
-        if uploaded is None:
-            continue
-        if not uploaded.name.lower().endswith(".pdf"):
-            raise ValueError(f"{label} must be uploaded as a PDF.")
-        safe_name = Path(uploaded.name.replace("\\", "/")).name
-        target = folder / f"{input_to_type[key]}.pdf"
-        content = uploaded.getvalue()
-        target.write_bytes(content)
-        extracted, flag = _extract_pdf_text(content)
-        if flag:
-            extracted = f"[DOCUMENT FLAG: {flag}]"
-        prepared.append(
+    texts = _document_texts(data)
+    documents = []
+    for doc_type in _DOC_TYPES:
+        filename = f"{doc_type}.pdf"
+        if data["document_mode"] == "Upload my own PDFs":
+            uploaded = data["uploads"].get(doc_type)
+            content = uploaded.getvalue() if uploaded is not None else b""
+            filename = Path(uploaded.name.replace("\\", "/")).name if uploaded else filename
+            text, flag = _extract_pdf_text(content)
+            if flag:
+                text = f"[DOCUMENT FLAG: {flag}]"
+        else:
+            text = texts[doc_type]
+            title = _DOC_LABELS[doc_type]
+            lines = text.splitlines()
+            content = _pdf_bytes(title, lines)
+            target = folder / filename
+            target.write_bytes(content)
+        if data["document_mode"] == "Upload my own PDFs":
+            (folder / f"{doc_type}.pdf").write_bytes(content)
+        documents.append(
             {
-                "doc_type": input_to_type[key],
-                "file_name": safe_name,
-                "file_path": target.relative_to(config.PROJECT_ROOT).as_posix(),
-                "text_content": extracted,
+                "doc_type": doc_type,
+                "file_name": filename,
+                "file_path": (folder / f"{doc_type}.pdf").relative_to(config.PROJECT_ROOT).as_posix(),
+                "text_content": text,
             }
         )
-    return prepared
+    return documents
+
+
+def _next_custom_application_id() -> str:
+    """Choose the next stable identifier for a permanent synthetic case."""
+    path = config.CUSTOM_CASES_PATH
+    entries = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    return f"APP-CUSTOM-{len(entries) + 1}"
+
+
+def _permanent_case_entry(data: dict, application_id: str) -> None:
+    """Persist only canonical case inputs and selected generated-document options."""
+    path = config.CUSTOM_CASES_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entries = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    saved = {
+        key: value
+        for key, value in data.items()
+        if key not in {"uploads", "consent", "declaration", "permanent"}
+    }
+    saved["document_mode"] = "Generate synthetic documents from my entries"
+    entries.append({"application_id": application_id, "inputs": saved})
+    path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _run_assessment(application_id: str) -> None:
+    """Open AI Assessment with the submitted application selected."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    st.session_state["selected_application"] = application_id
+    st.session_state["assessment_application_selector"] = application_id
+    st.switch_page(OPERATE_PAGES["ai_assessment"])
+
+
+def _add_another() -> None:
+    """Clear the completed intake and return to step one."""
+    st.session_state["intake"] = _initial_intake()
+    st.session_state["intake_step"] = 0
+    st.session_state.pop("intake_application_id", None)
+    st.session_state.pop("intake_error", None)
 
 
 def _submit_application(store: SQLiteStore) -> None:
-    """Validate, persist intake data, and navigate to its AI Assessment."""
-    error = _validate_step(3)
+    """Validate canonical state, persist the case and show post-submit actions."""
+    data = _intake()
+    data.update(_widget_values(3))
+    error = _validate(data, 3)
     if error:
+        st.session_state["intake"] = data
         st.session_state["intake_error"] = error
         return
-    state = st.session_state
-    dob = state["intake_dob"]
+    dob = date.fromisoformat(data["dob"])
     today = date.today()
     age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-    income = float(state["intake_income"])
-    existing_emi = float(state["intake_existing_emi"])
-    job_months = int(state["intake_job_months"])
-    experience_months = int(state["intake_experience_months"])
-    pan = state["intake_pan"].strip().upper()
     score = estimate_bureau_score(
-        income, existing_emi, job_months, experience_months, pan
+        float(data["income"]),
+        float(data["existing_emi"]),
+        int(data["job_months"]),
+        int(data["experience_months"]),
+        str(data["pan"]),
     )
-    thin_file = experience_months < 12
+    application_id = (
+        _next_custom_application_id()
+        if data["permanent"]
+        else f"APP-NEW-{uuid.uuid4().hex[:12].upper()}"
+    )
+    try:
+        documents = _save_documents(application_id, data)
+    except (OSError, ValueError) as error:
+        st.session_state["intake_error"] = str(error)
+        return
+    flags = [
+        f"{document['doc_type']}: unreadable"
+        for document in documents
+        if document["text_content"].startswith("[DOCUMENT FLAG:")
+    ]
     bureau = {
         "provider": "Synthetic bureau simulator",
         "score": score,
-        "thin_file": thin_file,
+        "thin_file": int(data["experience_months"]) < 12,
         "active_accounts": 0,
-        "enquiries_6m": 0 if thin_file else 1,
+        "enquiries_6m": 0 if int(data["experience_months"]) < 12 else 1,
         "max_dpd_24m": 0,
         "written_off": False,
         "utilization_pct": 0.0,
-        "document_flags": [],
+        "document_flags": flags,
     }
     kyc = {
         "provider": "Synthetic KYC simulator",
         "pan_status": "pending",
         "name_match_score": 1.0,
-        "pan_demo_id": pan,
+        "pan_demo_id": data["pan"],
         "cersai": "not applicable (unsecured)",
     }
-    submitted_at = datetime.now().isoformat(timespec="seconds")
-    generated_app_id = f"APP-NEW-{uuid.uuid4().hex[:12].upper()}"
-    try:
-        documents = _prepare_documents(generated_app_id, store)
-    except (OSError, ValueError) as error:
-        state["intake_error"] = str(error)
-        return
-    expected_types = {"payslip", "bank_statement_summary", "kyc_sheet"}
-    actual_types = {document["doc_type"] for document in documents}
-    flags = sorted(expected_types - actual_types)
-    flags.extend(
-        f"{document['doc_type']}: unreadable"
-        for document in documents
-        if document["text_content"].startswith("[DOCUMENT FLAG:")
-    )
-    bureau["document_flags"] = flags
     applicant = {
-        "name": state["intake_name"].strip(),
+        "name": data["name"].strip(),
         "dob": dob.isoformat(),
         "age": age,
-        "city": state["intake_city"].strip(),
-        "mobile": state["intake_mobile"].strip(),
-        "employer": state["intake_employer"].strip(),
-        "employment_type": state["intake_employment_type"],
-        "current_tenure_months": job_months,
-        "total_experience_months": experience_months,
-        "net_monthly_income": income,
-        "existing_emi": existing_emi,
-        "pan_demo_id": pan,
+        "city": data["city"].strip(),
+        "mobile": data["mobile"].strip(),
+        "employer": data["employer"].strip(),
+        "employment_type": data["employment_type"],
+        "current_tenure_months": int(data["job_months"]),
+        "total_experience_months": int(data["experience_months"]),
+        "net_monthly_income": float(data["income"]),
+        "existing_emi": float(data["existing_emi"]),
+        "pan_demo_id": data["pan"],
     }
     application = {
-        "requested_amount": float(state["intake_amount"]),
-        "tenure_months": int(state["intake_tenure"]),
-        "purpose": state["intake_purpose"],
-        "submitted_at": submitted_at,
+        "requested_amount": float(data["amount"]),
+        "tenure_months": int(data["tenure"]),
+        "purpose": data["purpose"],
+        "submitted_at": datetime.now().isoformat(timespec="seconds"),
     }
-    application_id = create_intake_application(
-        applicant,
-        application,
-        bureau,
-        kyc,
-        documents,
-        store,
-        application_id=generated_app_id,
-    )
-    state["selected_application"] = application_id
-    state["assessment_application_selector"] = application_id
-    state["intake_application_id"] = application_id
-    from loanpilot.navigation import OPERATE_PAGES
-
-    st.switch_page(OPERATE_PAGES["ai_assessment"])
+    try:
+        application_id = create_intake_application(
+            applicant, application, bureau, kyc, documents, store,
+            application_id=application_id,
+        )
+        if data["permanent"]:
+            _permanent_case_entry(data, application_id)
+    except (OSError, ValueError) as error:
+        st.session_state["intake_error"] = str(error)
+        return
+    st.session_state["intake_application_id"] = application_id
+    st.session_state["selected_application"] = application_id
 
 
 def _render_stepper(step: int) -> None:
-    """Display the four intake steps with explicit text and icon status."""
-    columns = st.columns(4)
-    for index, (column, label) in enumerate(zip(columns, _STEPS, strict=True)):
-        state = "Done" if index < step else "Current" if index == step else "Upcoming"
-        icon = "✓" if index < step else "●" if index == step else "○"
-        with column:
-            st.markdown(
-                f'<div class="lp-pipeline-card {"is-done" if index < step else "is-ready" if index == step else ""}">'
-                f'<div class="lp-pipeline-state">{icon} {state}</div>'
-                f'<div class="lp-pipeline-label">{index + 1}. {label}</div></div>',
-                unsafe_allow_html=True,
-            )
+    """Render the four-step progress labels."""
+    st.progress((step + 1) / len(_STEPS), text=f"Step {step + 1} of 4 · {_STEPS[step]}")
+    st.caption("Applicant  →  Employment and income  →  Loan request  →  Documents")
 
 
-def _render_applicant_step() -> None:
-    """Render personal identity fields."""
-    st.text_input("Full name *", key="intake_name")
-    first, second = st.columns(2)
-    with first:
-        st.date_input("Date of birth *", key="intake_dob", max_value=date.today())
-        st.text_input("City *", key="intake_city")
-    with second:
-        st.text_input("Fake PAN ID (DEMO… only) *", key="intake_pan")
-        st.text_input("Mobile number *", key="intake_mobile", max_chars=10)
+def _render_applicant(data: dict) -> None:
+    """Render required identity details and a read-only demo PAN."""
+    st.text_input("Full name *", value=data["name"], key="intake_widget_name")
+    left, right = st.columns(2)
+    left.date_input(
+        "Date of birth *",
+        value=date.fromisoformat(data["dob"]),
+        min_value=date(1900, 1, 1),
+        max_value=date.today(),
+        key="intake_widget_dob",
+    )
+    right.text_input("City *", value=data["city"], key="intake_widget_city")
+    left.text_input("Fake PAN ID · demo only", value=data["pan"], disabled=True, key="intake_pan_display")
+    right.text_input("Mobile number *", value=data["mobile"], max_chars=10, key="intake_widget_mobile")
 
 
-def _render_employment_step() -> None:
-    """Render employment and declared income details."""
-    st.text_input("Employer *", key="intake_employer")
-    first, second, third = st.columns(3)
-    with first:
-        st.selectbox("Employment type *", _EMPLOYMENT_TYPES, key="intake_employment_type")
-    with second:
-        st.number_input("Months in current job *", min_value=0, max_value=600, key="intake_job_months")
-    with third:
-        st.number_input("Total experience (months) *", min_value=0, max_value=600, key="intake_experience_months")
-    first, second = st.columns(2)
-    with first:
-        st.number_input("Net monthly income (Rs) *", min_value=1.0, step=1000.0, key="intake_income")
-    with second:
-        st.number_input("Existing monthly EMIs (Rs)", min_value=0.0, step=1000.0, key="intake_existing_emi")
+def _render_employment(data: dict) -> None:
+    """Render employment and income fields."""
+    st.text_input("Employer *", value=data["employer"], key="intake_widget_employer")
+    left, right = st.columns(2)
+    left.selectbox(
+        "Employment type *", _EMPLOYMENT_TYPES,
+        index=_EMPLOYMENT_TYPES.index(data["employment_type"]),
+        key="intake_widget_employment_type",
+    )
+    right.number_input(
+        "Months in current job *", min_value=0, max_value=600,
+        value=int(data["job_months"]), key="intake_widget_job_months",
+    )
+    left.number_input(
+        "Total experience (months) *", min_value=0, max_value=600,
+        value=int(data["experience_months"]), key="intake_widget_experience_months",
+    )
+    right.number_input(
+        "Net monthly income (Rs) *", min_value=1.0,
+        value=float(data["income"]), step=1000.0, key="intake_widget_income",
+    )
+    st.number_input(
+        "Existing monthly EMIs (Rs) *", min_value=0.0,
+        value=float(data["existing_emi"]), step=1000.0, key="intake_widget_existing_emi",
+    )
 
 
-def _render_loan_step() -> None:
-    """Render loan request details and indicative policy-grid pricing."""
-    first, second = st.columns(2)
-    with first:
-        st.number_input("Requested amount (Rs) *", min_value=1000.0, step=5000.0, key="intake_amount")
-    with second:
-        st.slider("Tenure (months) *", min_value=12, max_value=60, step=1, key="intake_tenure")
-    st.selectbox("Purpose *", _PURPOSES, key="intake_purpose")
+def _render_loan(data: dict) -> None:
+    """Render loan request fields and live indicative EMI."""
+    left, right = st.columns(2)
+    left.number_input(
+        "Requested amount (Rs) *", min_value=1000.0,
+        value=float(data["amount"]), step=5000.0, key="intake_widget_amount",
+    )
+    right.slider(
+        "Tenure (months) *", 12, 60, int(data["tenure"]), key="intake_widget_tenure",
+    )
+    st.selectbox(
+        "Purpose *", _PURPOSES, index=_PURPOSES.index(data["purpose"]),
+        key="intake_widget_purpose",
+    )
+    income = float(data["income"])
     score = estimate_bureau_score(
-        float(st.session_state["intake_income"]),
-        float(st.session_state["intake_existing_emi"]),
-        int(st.session_state["intake_job_months"]),
-        int(st.session_state["intake_experience_months"]),
-        str(st.session_state["intake_pan"]),
+        income,
+        float(data["existing_emi"]),
+        int(data["job_months"]),
+        int(data["experience_months"]),
+        str(data["pan"]),
     )
     rate = pricing_rate(score)
     if rate is None:
-        st.info("Indicative EMI: no grid rate yet (thin-file profile).")
+        st.info("Indicative EMI: no grid rate yet.")
     else:
+        amount = float(st.session_state["intake_widget_amount"])
+        tenure = int(st.session_state["intake_widget_tenure"])
         monthly = rate / 12
-        months = int(st.session_state["intake_tenure"])
-        factor = (1 + monthly) ** months
-        emi = float(st.session_state["intake_amount"]) * monthly * factor / (factor - 1)
+        factor = (1 + monthly) ** tenure
+        emi = amount * monthly * factor / (factor - 1)
         st.metric("Indicative EMI", fmt_inr(emi), help=f"Illustrative grid rate: {rate:.2%} p.a.")
 
 
-def _render_documents_step(store: SQLiteStore) -> None:
-    """Render PDF uploads, sample pack option, and required acknowledgements."""
-    state = st.session_state
+def _render_document_step(data: dict) -> None:
+    """Render generated/uploaded documents, full summary and declarations."""
+    st.radio(
+        "Document option",
+        ("Generate synthetic documents from my entries", "Upload my own PDFs"),
+        index=0 if data["document_mode"].startswith("Generate") else 1,
+        key="intake_widget_document_mode",
+    )
+    mode = st.session_state["intake_widget_document_mode"]
+    if mode.startswith("Generate"):
+        st.checkbox(
+            "Add a document problem for the demo",
+            value=bool(data["document_problem"]),
+            key="intake_widget_document_problem",
+        )
+        if st.session_state["intake_widget_document_problem"]:
+            options = st.selectbox(
+                "Choose document problem",
+                _PROBLEMS,
+                index=_PROBLEMS.index(data["problem_type"]),
+                key="intake_widget_problem_type",
+            )
+        else:
+            options = data["problem_type"]
+            st.session_state["intake_widget_problem_type"] = options
+        st.caption("The three PDFs are watermarked SYNTHETIC SAMPLE, DEMO ONLY.")
+    else:
+        st.session_state.setdefault("intake_widget_document_problem", False)
+        st.session_state.setdefault("intake_widget_problem_type", _PROBLEMS[0])
+        for doc_type in _DOC_TYPES:
+            st.file_uploader(
+                f"{_DOC_LABELS[doc_type]} PDF *",
+                type=["pdf"],
+                key=f"intake_upload_{doc_type}",
+            )
+        st.caption("Unreadable PDFs are registered with a document flag.")
+
+    summary = [
+        ("Applicant", data["name"]),
+        ("Date of birth", date.fromisoformat(data["dob"]).strftime("%d %b %Y")),
+        ("City", data["city"]),
+        ("Fake PAN ID", data["pan"]),
+        ("Mobile", data["mobile"]),
+        ("Employer", data["employer"]),
+        ("Employment type", data["employment_type"]),
+        ("Months in current job", str(data["job_months"])),
+        ("Total experience", str(data["experience_months"])),
+        ("Net monthly income", fmt_inr(data["income"])),
+        ("Existing EMIs", fmt_inr(data["existing_emi"])),
+        ("Loan amount", fmt_inr(data["amount"])),
+        ("Tenure", f"{data['tenure']} months"),
+        ("Purpose", data["purpose"]),
+    ]
     st.subheader("Review your entries")
-    st.caption("Read-only summary before submission.")
-    st.dataframe(
-        [
-            {"Item": "Applicant", "Your entry": state["intake_name"]},
-            {"Item": "Date of birth", "Your entry": state["intake_dob"].strftime("%d %b %Y")},
-            {"Item": "City", "Your entry": state["intake_city"]},
-            {"Item": "Fake PAN ID", "Your entry": state["intake_pan"]},
-            {"Item": "Employer", "Your entry": state["intake_employer"]},
-            {"Item": "Employment", "Your entry": state["intake_employment_type"]},
-            {"Item": "Job tenure", "Your entry": f"{state['intake_job_months']} months"},
-            {"Item": "Monthly income", "Your entry": fmt_inr(state["intake_income"])},
-            {"Item": "Existing EMIs", "Your entry": fmt_inr(state["intake_existing_emi"])},
-            {"Item": "Loan request", "Your entry": fmt_inr(state["intake_amount"])},
-            {"Item": "Tenure", "Your entry": f"{state['intake_tenure']} months"},
-            {"Item": "Purpose", "Your entry": state["intake_purpose"]},
-        ],
-        width="stretch",
-        hide_index=True,
+    st.table([{"Item": label, "Your entry": value} for label, value in summary])
+    st.checkbox(
+        "I consent to this synthetic demo application being processed. *",
+        value=bool(data["consent"]), key="intake_widget_consent",
     )
-    st.subheader("Documents and declarations")
-    st.write("Upload synthetic PDFs or attach the registered documents for a sample applicant.")
-    for key, label in _DOCUMENT_INPUTS:
-        st.file_uploader(f"{label} PDF", type=["pdf"], key=key)
-    st.button(
-        "Use sample pack",
-        on_click=_use_sample_pack,
-        key="use_sample_pack",
+    st.checkbox(
+        "I confirm these are fictional demonstration details. *",
+        value=bool(data["declaration"]), key="intake_widget_declaration",
     )
-    if st.session_state["intake_sample_pack"]:
-        st.success("Persona sample PDFs will be copied and attached.")
-    elif not any(st.session_state.get(key) for key, _ in _DOCUMENT_INPUTS):
-        st.caption("No documents selected. Missing or unreadable files will be flagged during assessment.")
-    st.checkbox("I consent to this synthetic demo application being processed. *", key="intake_consent")
-    st.checkbox("I confirm these are fictional demonstration details. *", key="intake_declaration")
+    st.checkbox(
+        "Save as a permanent demo case",
+        value=bool(data["permanent"]), key="intake_widget_permanent",
+    )
 
 
 def render(store: SQLiteStore | None = None) -> None:
-    """Render the four-step guided intake workflow."""
+    """Render the four-step intake and post-submit actions."""
     render_disclaimer()
-    _initialize_form()
     store = store or SQLiteStore()
     create_schema(store)
     render_header(
         "New Application",
-        "Capture a fictional applicant and prepare a case for the deterministic assessment workflow.",
+        "Enter synthetic applicant details and prepare a case for assessment.",
         "OPERATE  /  GUIDED INTAKE",
     )
-    samples = list_applications({"demo_only": True}, store)
-    if samples.empty and store.table_counts().get("cur_applications", 0) == 0:
-        st.info("No sample cases are loaded. You can continue with a custom applicant or load the synthetic personas.")
-        st.button(
-            "Load sample cases",
-            on_click=_load_sample_cases,
-            args=(store,),
-            key="intake_load_sample_cases",
-        )
-    elif samples.empty:
-        st.caption("No sample personas are loaded; you can continue with a custom applicant.")
-    sample_options = ["", *samples["application_id"].tolist()]
-    st.selectbox(
-        "Load sample applicant",
-        sample_options,
-        format_func=lambda value: (
-            "Choose a persona to prefill the form"
-            if not value
-            else str(
-                samples.loc[
-                    samples.application_id == value, "applicant"
-                ].iloc[0]
+    application_id = st.session_state.get("intake_application_id")
+    if application_id:
+        saved = get_application(str(application_id), store)
+        applicant = str(saved.iloc[0]["name"]) if not saved.empty else "Applicant"
+        with st.container(border=True):
+            st.success(f"Application submitted for {applicant}.")
+            st.caption(f"Case reference: {application_id} · Stage: Submitted")
+            st.button(
+                "Run AI assessment now",
+                type="primary",
+                width="stretch",
+                key="intake_run_assessment",
+                on_click=_run_assessment,
+                args=(str(application_id),),
             )
-        ),
-        key="intake_sample_persona",
-        on_change=_load_sample_applicant,
-    )
-    if st.session_state["intake_sample_persona"]:
-        with st.expander("Selected sample reference"):
-            st.code(str(st.session_state["intake_sample_persona"]))
-    _render_stepper(int(st.session_state["intake_step"]))
-    st.progress((int(st.session_state["intake_step"]) + 1) / len(_STEPS))
+            st.button("Add another", key="intake_add_another", on_click=_add_another)
+        return
+
+    if "intake_step" not in st.session_state:
+        st.session_state["intake_step"] = 0
+    data = _intake()
+    step = int(st.session_state["intake_step"])
+    _render_stepper(step)
     if st.session_state.get("intake_error"):
         st.warning(st.session_state["intake_error"])
-    step = int(st.session_state["intake_step"])
     if step == 0:
-        _render_applicant_step()
+        _render_applicant(data)
     elif step == 1:
-        _render_employment_step()
+        _render_employment(data)
     elif step == 2:
-        _render_loan_step()
+        _render_loan(data)
     else:
-        _render_documents_step(store)
+        _render_document_step(data)
 
+    candidate = _step_data(step)
+    validation = _validate(candidate, step)
     left, right = st.columns(2)
     with left:
         st.button(
             "Back",
-            on_click=_go_back,
-            key="intake_back",
             disabled=step == 0,
+            key="intake_back",
             width="stretch",
+            on_click=_step_transition,
+            args=(step, -1),
         )
     with right:
-        if step < len(_STEPS) - 1:
-            st.button("Next", on_click=_go_next, key="intake_next", type="primary", width="stretch")
+        if step < 3:
+            st.button(
+                "Next",
+                disabled=bool(validation),
+                type="primary",
+                key="intake_next",
+                width="stretch",
+                on_click=_step_transition,
+                args=(step, 1),
+            )
         else:
             st.button(
                 "Submit application",
+                disabled=bool(validation),
+                type="primary",
+                key="submit_application",
+                width="stretch",
                 on_click=_submit_application,
                 args=(store,),
-                key="submit_application",
-                type="primary",
-                width="stretch",
             )
+    if validation:
+        st.caption(validation)

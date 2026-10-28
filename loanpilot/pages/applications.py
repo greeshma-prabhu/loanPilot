@@ -18,6 +18,7 @@ from loanpilot.components import (
     fmt_inr,
     kpi_card,
     render_decision_card,
+    render_human_review_button,
     render_why,
     stage_tracker,
     status_chip,
@@ -81,6 +82,15 @@ def _open_ai_assessment(application_id: str) -> None:
 
     st.session_state["selected_application"] = application_id
     st.switch_page(OPERATE_PAGES["ai_assessment"])
+
+
+def _open_human_review(application_id: str) -> None:
+    """Open Human Review with this case selected."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    st.session_state["selected_application"] = application_id
+    st.session_state["review_application"] = application_id
+    st.switch_page(OPERATE_PAGES["human_review"])
 
 
 def _load_data(store: SQLiteStore) -> None:
@@ -261,7 +271,10 @@ def _render_applications_list(store: SQLiteStore) -> None:
     pinned_mask = filtered["persona_key"].notna() & ~filtered["stage"].isin(_CLOSED_STAGES)
     demo_rows = filtered.loc[pinned_mask]
     open_options = filtered.loc[~pinned_mask]
-    historical_rows = filtered.loc[filtered["persona_key"].isna()]
+    historical_rows = filtered.loc[
+        filtered["persona_key"].isna()
+        & ~filtered["application_id"].astype(str).str.startswith("APP-CUSTOM-")
+    ]
 
     metric_columns = st.columns(3)
     metric_columns[0].metric("Matching applications", len(filtered))
@@ -578,6 +591,8 @@ def _render_agent_trace(application_id: str, store: SQLiteStore) -> None:
 def _render_decision(application_id: str, application: pd.Series, store: SQLiteStore) -> None:
     """Show the shared AI summary beside the saved human outcome."""
     render_decision_card(application_id, store)
+    if application.get("ai_recommendation"):
+        render_human_review_button(application_id)
     render_why(application_id, store)
     st.subheader("Human decision")
     human_decision = application.get("human_decision")
@@ -755,6 +770,8 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
         f"{application['name']} · {application['stage']}",
         "OPERATE  /  CASE FILE",
     )
+    if str(application_id).startswith("APP-CUSTOM-"):
+        st.markdown(status_chip("Custom case", "info"), unsafe_allow_html=True)
     if application["stage"] == "Rejected":
         st.markdown(
             f"{status_chip('Rejected', 'danger')} "

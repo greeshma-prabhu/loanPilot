@@ -46,6 +46,19 @@ def _app(store: SQLiteStore) -> AppTest:
     )
 
 
+def test_greeshma_prabhu_is_available_as_a_reviewer(assessed_pair) -> None:
+    """The reviewer selector includes Greeshma Prabhu and preserves the selection."""
+    app = _app(assessed_pair).run()
+    application_id = app.selectbox(key="review_application").value
+    reviewer_key = f"reviewer_{application_id}"
+    reviewer = app.selectbox(key=reviewer_key)
+    assert "Greeshma Prabhu" in reviewer.options
+
+    reviewer.select("Greeshma Prabhu").run()
+
+    assert app.session_state[reviewer_key] == "Greeshma Prabhu"
+
+
 def _fake_sanction(
     application_id,
     amount,
@@ -135,5 +148,5 @@ def test_action_selection_survives_rerun_and_cases_do_not_share_form_state(asses
     assert app.session_state["review_action_APP-PERSONA-3"] == "refer_up"
 
     app.selectbox(key="review_application").select("APP-PERSONA-6").run()
-    assert app.session_state["review_action_APP-PERSONA-6"] == "approve"
+    assert app.session_state["review_action_APP-PERSONA-6"] == "reject"
     assert app.session_state.get("decision_reason_APP-PERSONA-6", "") == ""

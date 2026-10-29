@@ -41,24 +41,22 @@ def assessed_pair(tmp_path, monkeypatch) -> SQLiteStore:
 def _app(store: SQLiteStore) -> AppTest:
     """Render the review page against a dedicated temporary SQLite database."""
     return AppTest.from_string(
+        "import streamlit as st\n"
+        "st.session_state['auth'] = {'name': 'Test Reviewer', 'role': 'Credit Analyst'}\n"
         "from loanpilot.pages.human_review import render\n"
         "from loanpilot.data.store import SQLiteStore\n"
         f"render(SQLiteStore({str(store.path)!r}))\n"
     )
 
 
-def test_greeshma_prabhu_is_available_as_a_reviewer(assessed_pair) -> None:
-    """The reviewer selector includes Greeshma Prabhu and preserves the selection."""
+def test_signed_in_user_is_the_read_only_reviewer(assessed_pair) -> None:
+    """The signed-in identity is displayed rather than chosen from demo names."""
     app = _app(assessed_pair).run()
     application_id = "APP-PERSONA-3"
     app.button(key=f"review_open_{application_id}").click().run()
-    reviewer_key = f"reviewer_{application_id}"
-    reviewer = app.selectbox(key=reviewer_key)
-    assert "Greeshma Prabhu" in reviewer.options
-
-    reviewer.select("Greeshma Prabhu").run()
-
-    assert app.session_state[reviewer_key] == "Greeshma Prabhu"
+    reviewer = app.text_input(key=f"reviewer_display_{application_id}")
+    assert reviewer.value == "Test Reviewer"
+    assert reviewer.disabled
 
 
 def _fake_sanction(
@@ -113,6 +111,7 @@ def test_each_action_persists_matching_decision_stage_and_audit(
     audit = get_audit_log(application_id, assessed_pair)
     event = audit.loc[audit["action"].str.startswith("Human decision:")].iloc[0]
     assert event["action"] == f"Human decision: {decision}"
+    assert event["actor"] == "Test Reviewer"
     assert stage in event["detail"]
     assert application_id not in set(get_review_queue(assessed_pair)["application_id"])
     assert app.session_state["review_open"] is None

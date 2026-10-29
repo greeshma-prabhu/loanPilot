@@ -230,11 +230,34 @@ def render_decision_card(
     recommendation = str(model["recommendation"] or "Unavailable")
     policy = model["policy"]
     documents_failed = bool(policy.get("document_failure"))
-    title = (
-        "REFER: document review"
-        if recommendation == "Refer" and documents_failed
-        else recommendation.upper()
+    clauses = policy.get("clauses", [])
+    kyc_clause = next(
+        (clause for clause in clauses if clause.get("clause_id") == "CP-6.1"),
+        {},
     )
+    kyc_observed = kyc_clause.get("observed", {})
+    kyc_status = str(
+        kyc_observed.get("status", kyc_observed.get("pan_status", ""))
+    ).casefold()
+    kyc_score = float(
+        kyc_observed.get("name_match", kyc_observed.get("name_match_score", 1.0))
+        or 0
+    )
+    kyc_referral = recommendation == "Refer" and kyc_clause.get("status") == "refer"
+    if kyc_referral and kyc_score < 0.85 and (
+        kyc_status == "verified"
+        or "manual identity review"
+        in str(kyc_observed.get("reason", "")).casefold()
+    ):
+        title = "REFER: manual identity review"
+    elif kyc_referral and kyc_status != "verified":
+        title = "REFER: complete eKYC"
+    elif recommendation == "Refer" and documents_failed:
+        title = "REFER: document review"
+    elif recommendation == "Decline" and kyc_clause.get("status") == "decline":
+        title = "DECLINE: invalid PAN"
+    else:
+        title = recommendation.upper()
     icon, kind = {
         "Approve": ("✓", "success"),
         "Refer": ("!", "warning"),
@@ -261,6 +284,12 @@ def render_decision_card(
         ),
         "Decline": "One or more illustrative checks were not met; this is not a final credit decision.",
     }.get(recommendation, "The assessment result is unavailable.")
+    if kyc_referral:
+        summary = (
+            "Complete the simulated identity check before a person continues the review."
+            if kyc_status != "verified"
+            else "Identity needs manual review because the name match is below 0.85."
+        )
     with st.container(border=True):
         st.markdown(
             f'<div class="lp-decision-title {kind}"><span aria-hidden="true">{icon}</span>'

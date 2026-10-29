@@ -43,6 +43,15 @@ def _remember_selection() -> None:
         st.session_state["selected_application"] = application_id
 
 
+def _open_kyc_case(application_id: str) -> None:
+    """Open the selected case with its KYC panel displayed."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    st.session_state["selected_application"] = application_id
+    st.session_state["case_kyc_open"] = application_id
+    st.switch_page(OPERATE_PAGES["applications"])
+
+
 def _run_selected_assessment(application_id: str, store: SQLiteStore) -> None:
     """Run the deterministic workflow and store its result for the current view."""
     result = run_assessment(application_id, store)
@@ -264,8 +273,52 @@ def _render_recommendation(result: dict[str, Any]) -> None:
 
         counterfactual = result.get("counterfactual", {})
         affordable = counterfactual.get("max_affordable_amount")
+        kyc_clause = next(
+            (
+                clause
+                for clause in result.get("policy", {}).get("clauses", [])
+                if clause.get("clause_id") == "CP-6.1"
+            ),
+            {},
+        )
+        observed_kyc = kyc_clause.get("observed", {})
+        kyc_name_match = float(
+            observed_kyc.get("name_match", observed_kyc.get("name_match_score", 1))
+            or 0
+        )
+        kyc_reason = str(observed_kyc.get("reason", "")).casefold()
+        kyc_pending = (
+            kyc_clause.get("status") == "refer"
+            and str(
+                observed_kyc.get(
+                    "status", observed_kyc.get("pan_status", "")
+                )
+            ).casefold()
+            != "verified"
+            and not (
+                kyc_name_match < 0.85
+                and "manual identity review" in kyc_reason
+            )
+        )
+        kyc_mismatch = (
+            kyc_clause.get("status") == "refer"
+            and kyc_name_match < 0.85
+            and (
+                str(
+                    observed_kyc.get(
+                        "status", observed_kyc.get("pan_status", "")
+                    )
+                ).casefold()
+                == "verified"
+                or "manual identity review" in kyc_reason
+            )
+        )
         st.markdown("**What would change this**")
-        if affordable is None:
+        if kyc_pending:
+            st.write("Complete eKYC")
+        elif kyc_mismatch:
+            st.write("Manual identity review")
+        elif affordable is None:
             st.write(counterfactual.get("note", "No affordable amount is available."))
         else:
             st.write(
@@ -341,7 +394,30 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
             clause.get("clause_id") == "CP-5.4" and clause.get("status") == "refer"
             for clause in clauses
         )
-        if doc_failure:
+        kyc_clause = next(
+            (clause for clause in clauses if clause.get("clause_id") == "CP-6.1"),
+            {},
+        )
+        kyc_observed = kyc_clause.get("observed", {})
+        kyc_status = str(
+            kyc_observed.get("status", kyc_observed.get("pan_status", ""))
+        ).casefold()
+        kyc_score = float(
+            kyc_observed.get("name_match", kyc_observed.get("name_match_score", 1))
+            or 0
+        )
+        if kyc_clause.get("status") == "refer":
+            change_text = (
+                "Manual identity review"
+                if kyc_score < 0.85
+                and (
+                    kyc_status == "verified"
+                    or "manual identity review"
+                    in str(kyc_observed.get("reason", "")).casefold()
+                )
+                else "Complete eKYC"
+            )
+        elif doc_failure:
             change_text = "Provide corrected payslip and bank-statement evidence for document review."
         elif thin_file:
             change_text = "The thin-file request is capped at Rs 75,000 in this demo."
@@ -354,6 +430,14 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
             change_text = counterfactual.get("note", "Review the triggering policy checks.")
         st.markdown("### What would change this")
         st.write(change_text)
+        if kyc_clause.get("status") == "refer":
+            st.button(
+                "Complete eKYC (demo)",
+                key=f"assessment_open_kyc_{application_id}",
+                on_click=_open_kyc_case,
+                args=(application_id,),
+                width="stretch",
+            )
     _render_details(result)
 
 

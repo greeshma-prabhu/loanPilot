@@ -58,7 +58,7 @@ def list_applications(
                d.ai_recommendation,
                json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band,
                d.human_decision,
-               d.decided_by AS owner,
+               COALESCE(NULLIF(d.decided_by, ''), a.owner) AS owner,
                f.bureau_score
         FROM cur_applications a
         JOIN cur_customers c ON c.customer_id = a.customer_id
@@ -130,6 +130,57 @@ def get_customer(customer_id: str, store: SQLiteStore | None = None) -> pd.DataF
     )
 
 
+def list_intake_customers(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Return searchable synthetic core customers and their latest loan term."""
+    return _store(store).query(
+        """
+        SELECT c.customer_id, c.name, c.dob, c.age, c.city, c.mobile,
+               c.employer, c.employment_type, c.current_tenure_months,
+               c.total_experience_months, c.net_monthly_income, c.pan_demo_id,
+               c.kyc_status,
+               COALESCE((
+                   SELECT a.tenure_months
+                   FROM cur_applications a
+                   WHERE a.customer_id = c.customer_id
+                   ORDER BY a.submitted_at DESC, a.application_id
+                   LIMIT 1
+               ), 36) AS prior_tenure_months
+        FROM cur_customers c
+        ORDER BY c.name, c.customer_id
+        """
+    )
+
+
+def save_kyc_response(
+    application_id: str,
+    payload: Mapping[str, Any],
+    store: SQLiteStore | None = None,
+) -> None:
+    """Replace the case's KYC response and synchronize its curated status."""
+    database = _store(store)
+    now = datetime.now().isoformat(timespec="seconds")
+    database.execute(
+        """
+        INSERT INTO raw_kyc_responses (application_id, payload_json, fetched_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(application_id) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            fetched_at = excluded.fetched_at
+        """,
+        (application_id, json.dumps(dict(payload), sort_keys=True), now),
+    )
+    database.execute(
+        """
+        UPDATE cur_customers
+        SET kyc_status = ?
+        WHERE customer_id = (
+            SELECT customer_id FROM cur_applications WHERE application_id = ?
+        )
+        """,
+        (str(payload.get("status", payload.get("pan_status", "pending"))), application_id),
+    )
+
+
 def get_documents(application_id: str, store: SQLiteStore | None = None) -> pd.DataFrame:
     """Fetch registered document metadata and extracted text."""
     return _store(store).query(
@@ -141,6 +192,31 @@ def get_documents(application_id: str, store: SQLiteStore | None = None) -> pd.D
         ORDER BY uploaded_at, doc_type
         """,
         (application_id,),
+    )
+
+
+def register_document(
+    application_id: str,
+    document: Mapping[str, Any],
+    store: SQLiteStore | None = None,
+) -> None:
+    """Register one newly captured document in the RAW evidence table."""
+    _store(store).execute(
+        """
+        INSERT INTO raw_documents
+            (doc_id, application_id, doc_type, file_name, file_path,
+             text_content, uploaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"DOC-{uuid4().hex.upper()}",
+            application_id,
+            document["doc_type"],
+            document["file_name"],
+            document["file_path"],
+            document["text_content"],
+            datetime.now().isoformat(timespec="seconds"),
+        ),
     )
 
 
@@ -817,6 +893,14 @@ def save_llm_cache(
     )
 
 
+def clear_llm_cache(application_id: str, store: SQLiteStore | None = None) -> None:
+    """Clear generated language cache before an explicitly rerun assessment."""
+    _store(store).execute(
+        "DELETE FROM cur_llm_cache WHERE application_id = ?",
+        (application_id,),
+    )
+
+
 def overview_pipeline_counts(store: SQLiteStore | None = None) -> pd.DataFrame:
     """Count active applications grouped by their current stage."""
     return _store(store).query(
@@ -971,6 +1055,7 @@ def create_intake_application(
     *,
     application_id: str | None = None,
     customer_id: str | None = None,
+    owner: str = "",
 ) -> str:
     """Atomically register a new synthetic applicant, case, evidence and audit event."""
     database = _store(store)
@@ -979,37 +1064,49 @@ def create_intake_application(
     submitted_at = str(application["submitted_at"])
     now = datetime.now().isoformat(timespec="seconds")
     with database.connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO cur_customers
-                (customer_id, name, dob, age, city, mobile, employer, employment_type,
-                 current_tenure_months, total_experience_months, net_monthly_income,
-                 pan_demo_id, kyc_status, relationship_since)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                customer_id,
-                applicant["name"],
-                applicant["dob"],
-                int(applicant["age"]),
-                applicant["city"],
-                applicant["mobile"],
-                applicant["employer"],
-                applicant["employment_type"],
-                int(applicant["current_tenure_months"]),
-                int(applicant["total_experience_months"]),
-                float(applicant["net_monthly_income"]),
-                applicant["pan_demo_id"],
-                "pending",
-                now[:10],
-            ),
-        )
+        if applicant.get("existing_customer"):
+            customer_exists = connection.execute(
+                "SELECT 1 FROM cur_customers WHERE customer_id = ?",
+                (customer_id,),
+            ).fetchone()
+            if customer_exists is None:
+                raise ValueError(f"Unknown existing customer id: {customer_id}")
+            connection.execute(
+                "UPDATE cur_customers SET kyc_status = ? WHERE customer_id = ?",
+                (str(kyc.get("status", "verified")), customer_id),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO cur_customers
+                    (customer_id, name, dob, age, city, mobile, employer, employment_type,
+                     current_tenure_months, total_experience_months, net_monthly_income,
+                     pan_demo_id, kyc_status, relationship_since)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    customer_id,
+                    applicant["name"],
+                    applicant["dob"],
+                    int(applicant["age"]),
+                    applicant["city"],
+                    applicant["mobile"],
+                    applicant["employer"],
+                    applicant["employment_type"],
+                    int(applicant["current_tenure_months"]),
+                    int(applicant["total_experience_months"]),
+                    float(applicant["net_monthly_income"]),
+                    applicant["pan_demo_id"],
+                    str(kyc.get("status", "pending")),
+                    now[:10],
+                ),
+            )
         connection.execute(
             """
             INSERT INTO cur_applications
                 (application_id, customer_id, requested_amount, tenure_months,
-                 purpose, channel, submitted_at, stage, persona_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'Submitted', NULL)
+                 purpose, channel, submitted_at, stage, persona_key, owner)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Submitted', NULL, ?)
             """,
             (
                 application_id,
@@ -1019,52 +1116,55 @@ def create_intake_application(
                 application["purpose"],
                 "Guided demo",
                 submitted_at,
+                owner,
             ),
         )
-        connection.execute(
-            """
-            INSERT INTO cur_accounts
-                (account_id, customer_id, type, avg_monthly_balance, opened_on)
-            VALUES (?, ?, 'Savings (synthetic)', 0, ?)
-            """,
-            (f"ACCT-{customer_id}", customer_id, now[:10]),
-        )
-        if float(applicant["existing_emi"]) > 0:
+        if not applicant.get("existing_customer"):
             connection.execute(
                 """
-                INSERT INTO cur_existing_loans
-                    (loan_id, customer_id, product, sanctioned_amount, emi,
-                     outstanding, tenure_remaining_months, status)
-                VALUES (?, ?, 'Existing obligation (declared)', 0, ?, 0, 0, 'Active')
+                INSERT INTO cur_accounts
+                    (account_id, customer_id, type, avg_monthly_balance, opened_on)
+                VALUES (?, ?, 'Savings (synthetic)', 0, ?)
                 """,
-                (f"LOAN-{customer_id}", customer_id, float(applicant["existing_emi"])),
+                (f"ACCT-{customer_id}", customer_id, now[:10]),
             )
-        month = datetime.fromisoformat(submitted_at).date().replace(day=1)
-        transaction_rows = []
-        for offset in range(6):
-            month_index = month.year * 12 + month.month - 1 - offset
-            transaction_month = datetime(
-                month_index // 12,
-                month_index % 12 + 1,
-                1,
-            ).strftime("%Y-%m")
-            transaction_rows.append(
-                (
-                    customer_id,
-                    transaction_month,
-                    float(applicant["net_monthly_income"]),
-                    0.0,
-                    0,
+            if float(applicant["existing_emi"]) > 0:
+                connection.execute(
+                    """
+                    INSERT INTO cur_existing_loans
+                        (loan_id, customer_id, product, sanctioned_amount, emi,
+                         outstanding, tenure_remaining_months, status)
+                    VALUES (?, ?, 'Existing obligation (declared)', 0, ?, 0, 0, 'Active')
+                    """,
+                    (f"LOAN-{customer_id}", customer_id, float(applicant["existing_emi"])),
                 )
+        month = datetime.fromisoformat(submitted_at).date().replace(day=1)
+        if not applicant.get("existing_customer"):
+            transaction_rows = []
+            for offset in range(6):
+                month_index = month.year * 12 + month.month - 1 - offset
+                transaction_month = datetime(
+                    month_index // 12,
+                    month_index % 12 + 1,
+                    1,
+                ).strftime("%Y-%m")
+                transaction_rows.append(
+                    (
+                        customer_id,
+                        transaction_month,
+                        float(applicant["net_monthly_income"]),
+                        0.0,
+                        0,
+                    )
+                )
+            connection.executemany(
+                """
+                INSERT INTO cur_transactions
+                    (customer_id, month, salary_credit, total_debits, cheque_bounces)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                transaction_rows,
             )
-        connection.executemany(
-            """
-            INSERT INTO cur_transactions
-                (customer_id, month, salary_credit, total_debits, cheque_bounces)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            transaction_rows,
-        )
         connection.execute(
             """
             INSERT INTO raw_bureau_responses (application_id, payload_json, fetched_at)
@@ -1109,7 +1209,7 @@ def create_intake_application(
                 f"INTAKE-{uuid4().hex.upper()}",
                 application_id,
                 now,
-                "LoanPilot Guided Intake",
+                owner or "LoanPilot Guided Intake",
                 "Application submitted",
                 "Synthetic applicant and declared documents registered.",
             ),
@@ -1119,9 +1219,9 @@ def create_intake_application(
 
 _EXPLORER_OBJECTS: dict[str, dict[str, str]] = {
     "raw": {
-        "raw_documents": "Uploaded or sample document metadata, extracted text and file paths.",
+        "raw_documents": "Financial and identity document metadata, extracted text and project-relative file paths.",
         "raw_bureau_responses": "Synthetic bureau request responses stored as JSON.",
-        "raw_kyc_responses": "Synthetic KYC request responses stored as JSON.",
+        "raw_kyc_responses": "Simulated eKYC and synthetic KYC status, match score, method and document references stored as JSON.",
         "raw_policy_docs": "Policy clause text and version information.",
     },
     "curated": {

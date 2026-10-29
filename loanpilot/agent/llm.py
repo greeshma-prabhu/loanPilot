@@ -83,6 +83,47 @@ def _generate_json(prompt: str, api_key: str) -> dict[str, Any]:
     return result
 
 
+def extract_identity_holder_name(content: bytes, mime_type: str) -> dict[str, str] | None:
+    """Extract a holder name and optional PAN identifier from synthetic identity evidence."""
+    api_key = _api_key()
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                "Read the holder's full name only from this synthetic identity document. "
+                "Return JSON with holder_name (string or null) and pan_number (string or null). "
+                "Do not infer missing text.",
+                types.Part.from_bytes(data=content, mime_type=mime_type),
+            ],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        if not response.text:
+            return None
+        payload = json.loads(response.text)
+        if not isinstance(payload, dict):
+            return None
+        name = payload.get("holder_name")
+        pan_number = payload.get("pan_number")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        return {
+            "holder_name": name.strip(),
+            "pan_number": pan_number.strip() if isinstance(pan_number, str) else "",
+        }
+    except Exception as error:
+        LOGGER.warning(
+            "Identity document extraction failed (%s).",
+            type(error).__name__,
+        )
+        return None
+
+
 def run_json_step(
     application_id: str,
     step: str,

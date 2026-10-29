@@ -18,6 +18,7 @@ from loanpilot.pages import (
     approach_story,
     data_explorer,
     human_review,
+    login,
     new_application,
     overview,
     technical_architecture,
@@ -33,6 +34,7 @@ PAGE_MODULES = [
     technical_architecture,
     data_explorer,
     about_faq,
+    login,
 ]
 
 _STORE_PAGES = {
@@ -59,32 +61,26 @@ def _render_page(module, store: SQLiteStore) -> AppTest:
     argument = f"SQLiteStore({str(store.path)!r})" if page_name in _STORE_PAGES else ""
     imports = "from loanpilot.data.store import SQLiteStore\n" if argument else ""
     return AppTest.from_string(
+        "import streamlit as st\n"
+        "st.session_state['auth'] = {'name': 'Smoke Test Analyst', 'role': 'Credit Analyst'}\n"
         f"{imports}from {module.__name__} import render\nrender({argument})"
     )
 
 
 def test_app_runs_without_exception() -> None:
-    """The navigation entry point should render its default page."""
+    """The logged-out app exposes only its login page."""
     app = AppTest.from_file(str(APP_PATH)).run()
     assert not app.exception
-    assert any(button.label == "Start demo with Priya Menon" for button in app.button)
+    assert any(button.label == "Sign in" for button in app.button)
+    assert any(button.label == "Continue with demo access" for button in app.button)
+    assert not app.get("page_link")
 
 
-def test_know_more_expands_explanatory_navigation() -> None:
-    """The sidebar Know more expander contains all explanatory pages."""
+def test_logged_out_app_does_not_expose_product_navigation() -> None:
+    """No product pages or sidebar navigation are reachable before sign-in."""
     app = AppTest.from_file(str(APP_PATH)).run()
     assert not app.exception
-    assert any(item.label == "Know more" for item in app.expander)
-    page_labels = {item.label for item in app.get("page_link")}
-    assert all(
-        label in page_labels
-        for label in (
-            "Approach Story",
-            "Technical Architecture",
-            "Data Explorer",
-            "About & FAQ",
-        )
-    )
+    assert not app.get("page_link")
 
 
 def test_know_more_pages_are_registered_in_hidden_navigation() -> None:

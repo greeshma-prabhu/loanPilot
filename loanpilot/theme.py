@@ -34,6 +34,33 @@ _CSS = """
     [data-testid="stColumn"] {
         min-width: 0 !important;
     }
+    @media (max-width: 760px) {
+        [data-testid="stCheckbox"] label,
+        [data-testid="stRadio"] label,
+        label[data-react-aria-pressable="true"] {
+            box-sizing: border-box;
+            min-height: 44px !important;
+            height: auto !important;
+            padding: 8px 12px 8px 4px !important;
+            align-items: center;
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        [data-testid="stCheckbox"] input[type="checkbox"],
+        [data-testid="stRadio"] input[type="radio"],
+        label[data-react-aria-pressable="true"] input[type="checkbox"],
+        label[data-react-aria-pressable="true"] input[type="radio"] {
+            min-width: 20px !important;
+            width: 20px !important;
+            min-height: 20px !important;
+            height: 20px !important;
+        }
+        [data-testid="stBaseButton-primary"],
+        [data-testid="stBaseButton-secondary"] {
+            min-height: 44px !important;
+            touch-action: manipulation;
+        }
+    }
     [class*="st-key-hr-decided-"] {
         border-radius: 10px;
         background: rgba(243, 247, 248, .78);
@@ -599,6 +626,148 @@ _CSS = """
 def render_disclaimer() -> None:
     """Apply shared presentation styles without rendering a global banner."""
     st.markdown(_CSS, unsafe_allow_html=True)
+
+
+def render_login_styles() -> None:
+    """Apply a centered, neutral login-card theme."""
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"], [data-testid="stHeader"],
+        [data-testid="stToolbar"], footer { display:none !important; }
+        [data-testid="stMain"] {
+            align-items:center !important;
+            justify-content:center !important;
+        }
+        [data-testid="stMainBlockContainer"] {
+            width:100% !important;
+            max-width:none !important;
+            min-height:100vh !important;
+            display:flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            padding:20px !important;
+            box-sizing:border-box !important;
+        }
+        .stApp { background:#f2f4f6 !important; color:#202a35 !important; }
+        .st-key-login-card {
+            box-sizing:border-box;
+            width:min(100%, 440px);
+            margin:auto !important;
+            padding:38px 40px 32px;
+            border:1px solid #dfe3e8;
+            border-radius:22px;
+            background:#fff;
+            box-shadow:0 18px 50px rgba(25,38,53,.12);
+            gap:.45rem !important;
+        }
+        .lp-login-brand {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:12px;
+            margin-bottom:25px;
+            color:#202a35;
+            font-size:.95rem;
+            font-weight:720;
+        }
+        .lp-ring-mark {
+            display:inline-flex;
+            width:36px;
+            height:36px;
+            align-items:center;
+            justify-content:center;
+            border:2px solid #344256;
+            border-radius:50%;
+            color:#344256;
+            font-size:.95rem;
+            font-weight:780;
+        }
+        .lp-login-title {
+            margin:0;
+            color:#202a35;
+            text-align:center;
+            font-size:2rem;
+            letter-spacing:-.035em;
+        }
+        .lp-login-subtitle {
+            margin:4px 0 20px;
+            color:#536273;
+            text-align:center;
+        }
+        .st-key-login-card [data-testid="stForm"] {
+            border:0 !important;
+            padding:0 !important;
+        }
+        .st-key-login-card [data-testid="stTextInput"] label {
+            color:#263443 !important;
+            font-weight:630;
+        }
+        .st-key-login-card [data-testid="stTextInput"] input {
+            min-height:46px;
+            padding-inline:15px;
+            border:1px solid #8a96a5 !important;
+            border-radius:12px !important;
+            background:#fff !important;
+            color:#202a35 !important;
+        }
+        .st-key-login-card [data-testid="stTextInput"] input:focus {
+            outline:3px solid #7789a2 !important;
+            outline-offset:2px;
+        }
+        .st-key-login-card [data-testid="stBaseButton-primary"] {
+            min-height:48px;
+            border:0 !important;
+            border-radius:12px !important;
+            background:#27364a !important;
+            color:#fff !important;
+            box-shadow:none !important;
+        }
+        .st-key-login-card [data-testid="stBaseButton-primary"] * {
+            color:#fff !important;
+        }
+        .st-key-login-card [data-testid="stBaseButton-secondary"] {
+            min-height:48px;
+            border:1px solid #667386 !important;
+            border-radius:12px !important;
+            background:#fff !important;
+            color:#27364a !important;
+        }
+        .st-key-login-card [data-testid="stBaseButton-secondary"] * {
+            color:#27364a !important;
+        }
+        .st-key-login-card [data-testid="stBaseButton-tertiary"] {
+            min-height:28px !important;
+            padding-block:0 !important;
+            color:#344256 !important;
+            text-decoration:underline;
+        }
+        .st-key-login-card button:focus-visible {
+            outline:3px solid #53677f !important;
+            outline-offset:3px;
+        }
+        .lp-login-divider {
+            display:flex;
+            align-items:center;
+            gap:12px;
+            margin:2px 0 7px;
+            color:#596777;
+            font-size:.85rem;
+        }
+        .lp-login-divider:before, .lp-login-divider:after {
+            content:"";
+            flex:1;
+            height:1px;
+            background:#dce1e7;
+        }
+        @media(max-width:600px) {
+            [data-testid="stMainBlockContainer"] { padding:14px !important; }
+            .st-key-login-card { padding:30px 23px 26px; border-radius:18px; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_header(

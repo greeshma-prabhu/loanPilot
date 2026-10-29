@@ -30,6 +30,16 @@
     "note": "Mock KYC responses are generated for the demonstration."
   },
   {
+    "component": "eKYC: upload read and registry check",
+    "status": "Simulated",
+    "note": "Synthetic identity documents are read and matched; the registry check is a local demo simulation."
+  },
+  {
+    "component": "KYC on file (core banking)",
+    "status": "Simulated",
+    "note": "Existing-customer identity status comes from synthetic core banking records."
+  },
+  {
     "component": "CERSAI",
     "status": "Not applicable",
     "note": "Unsecured personal-loan demonstration."
@@ -50,9 +60,14 @@
     "note": "Target-state integration; not connected."
   },
   {
-    "component": "Authentication",
+    "component": "Sign-in (demo-grade credentials and demo access)",
+    "status": "Real",
+    "note": "No MFA, no SSO, no persistent sessions"
+  },
+  {
+    "component": "SSO and MFA",
     "status": "Planned",
-    "note": "No reviewer authentication is implemented."
+    "note": "Not implemented in the demo."
   },
   {
     "component": "Alerting",

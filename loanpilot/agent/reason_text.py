@@ -71,9 +71,12 @@ def _reason_sentence(clause: dict[str, Any]) -> str:
             f"the demo amount cap is {fmt_inr(observed.get('amount_cap'))}."
         )
     if clause_id == "CP-6.1":
+        if observed.get("reason"):
+            return str(observed["reason"])
         return (
-            f"KYC status is {observed.get('pan_status') or 'unavailable'} "
-            f"with a name-match score of {float(observed.get('name_match_score') or 0):.2f}."
+            f"KYC status is {observed.get('status', observed.get('pan_status')) or 'unavailable'} "
+            f"with a name-match score of "
+            f"{float(observed.get('name_match', observed.get('name_match_score')) or 0):.2f}."
         )
     if clause_id == "CP-6.2":
         issues = []

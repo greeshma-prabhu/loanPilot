@@ -125,7 +125,8 @@ def render(store: SQLiteStore | None = None) -> None:
 
     st.subheader("Lineage")
     st.write(
-        "Uploaded documents and mock bureau/KYC responses enter RAW. Customer, "
+        "Uploaded financial and identity documents plus mock bureau/KYC responses enter RAW. "
+        "eKYC status, method and name-match results are stored as a simulated KYC JSON response. Customer, "
         "transaction and application records are kept in CURATED tables. The "
         "SERVING view joins these sources to calculate income, proposed EMI, FOIR, "
         "bureau score and document flags for the assessment workflow."

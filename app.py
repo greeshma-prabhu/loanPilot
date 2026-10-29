@@ -3,14 +3,35 @@
 import streamlit as st
 
 from loanpilot import config
-from loanpilot.data.bootstrap import bootstrap_demo_data
-from loanpilot.data.store import SQLiteStore
-from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION, OPERATE_PAGES
+from loanpilot.pages import login
+
+LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
+
+
+def _sign_out(login_page) -> None:
+    """Clear the authenticated identity and return to the sole logged-out route."""
+    st.session_state.pop("auth", None)
+    st.switch_page(login_page)
 
 
 def main() -> None:
-    """Configure navigation and render the selected page."""
-    st.set_page_config(page_title=config.APP_NAME, page_icon="🏦", layout="wide")
+    """Gate all product navigation behind a session-level sign-in."""
+    st.set_page_config(
+        page_title=config.APP_NAME,
+        page_icon="🏦",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    if not st.session_state.get("auth"):
+        from loanpilot import navigation as _navigation
+
+        st.navigation([LOGIN_PAGE], position="hidden").run()
+        return
+
+    from loanpilot.data.bootstrap import bootstrap_demo_data
+    from loanpilot.data.store import SQLiteStore
+    from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION, OPERATE_PAGES
+
     store = SQLiteStore()
     if not st.session_state.get("_loanpilot_bootstrapped"):
         with st.spinner("Checking the synthetic demo setup..."):
@@ -19,14 +40,29 @@ def main() -> None:
         if bootstrap_status:
             st.session_state["_loanpilot_bootstrap_notice"] = bootstrap_status
 
-    navigation = st.navigation(NAVIGATION, position="hidden")
-
+    navigation_pages = {
+        **NAVIGATION,
+        "Access": [LOGIN_PAGE],
+    }
+    navigation = st.navigation(navigation_pages, position="hidden")
+    auth = st.session_state["auth"]
     with st.sidebar:
         st.markdown(
             '<div class="lp-sidebar-brand">LoanPilot'
             f'<span>{config.BANK_NAME}</span></div>',
             unsafe_allow_html=True,
         )
+        with st.container(border=True):
+            st.markdown(
+                f"**Signed in as {auth['name']} · {auth['role']}**"
+            )
+            st.button(
+                "Sign out",
+                key="sign_out",
+                on_click=_sign_out,
+                args=(LOGIN_PAGE,),
+                width="stretch",
+            )
         for key in ("overview", "applications", "new_application", "ai_assessment", "human_review"):
             st.page_link(OPERATE_PAGES[key])
         with st.expander("Know more", expanded=False):

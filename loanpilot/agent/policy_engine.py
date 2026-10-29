@@ -220,14 +220,37 @@ def evaluate_policy(
         "medium" if thin_file else "low",
     )
 
-    pan_verified = str(kyc.get("pan_status", "")).casefold() == "verified"
-    name_score = float(kyc.get("name_match_score") or 0)
-    kyc_pass = pan_verified and name_score >= 0.85
+    kyc_status = str(kyc.get("status", kyc.get("pan_status", "pending"))).casefold()
+    name_score = float(kyc.get("name_match", kyc.get("name_match_score")) or 0)
+    pan_status = str(kyc.get("pan_status", kyc_status)).casefold()
+    kyc_reason = str(kyc.get("reason", "")).casefold()
+    if kyc_status in {"invalid", "not_found", "not found"} or pan_status in {
+        "invalid",
+        "not_found",
+        "not found",
+    }:
+        kyc_status_result, kyc_reason_text = "decline", "PAN is invalid or not found."
+    elif name_score < 0.85 and (
+        kyc_status == "verified" or "manual identity review" in kyc_reason
+    ):
+        kyc_status_result, kyc_reason_text = "refer", "Manual identity review is required."
+    elif kyc_status != "verified":
+        kyc_status_result, kyc_reason_text = "refer", "Complete eKYC before a decision."
+    elif name_score < 0.85:
+        kyc_status_result, kyc_reason_text = "refer", "Manual identity review is required."
+    else:
+        kyc_status_result, kyc_reason_text = "pass", "Identity check passed."
     add(
         "CP-6.1",
-        {"pan_status": kyc.get("pan_status"), "name_match_score": name_score},
-        "pass" if kyc_pass else "decline",
-        "low" if kyc_pass else "high",
+        {
+            "status": kyc_status,
+            "pan_status": kyc.get("pan_status", kyc_status),
+            "name_match": name_score,
+            "name_match_score": name_score,
+            "reason": kyc_reason_text,
+        },
+        kyc_status_result,
+        "low" if kyc_status_result == "pass" else "medium" if kyc_status_result == "refer" else "high",
     )
 
     document_pass = all(

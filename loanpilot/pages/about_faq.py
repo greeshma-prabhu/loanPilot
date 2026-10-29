@@ -40,6 +40,10 @@ _FAQ = [
         "The recommendation is evidence-linked and handed to a human. Reviewers "
         "can make a different decision, with a written reason recorded for an override.",
     ),
+    (
+        "How does sign-in work?",
+        "Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.",
+    ),
 ]
 
 _GLOSSARY = [
@@ -134,7 +138,7 @@ def render() -> None:
             "- Bureau and KYC results are mock responses.\n"
             "- Policy thresholds and prices are illustrative demo settings.\n"
             "- Gemini is optional and cannot change deterministic outcomes.\n"
-            "- The reviewer names and contact details are fictional.\n"
+            "- Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.\n"
             "- Disbursement is simulated; generated PDFs contain synthetic content."
         )
         st.markdown("#### Illustrative turnaround inputs")

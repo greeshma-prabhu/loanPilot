@@ -10,17 +10,27 @@ from loanpilot.data.queries import (
     create_intake_application,
     get_application,
     get_audit_log,
+    get_agent_trace,
     get_bureau,
     get_documents,
     get_kyc,
+    human_decision_is_override,
+    list_intake_customers,
     list_applications,
     overview_metrics,
+    record_human_decision,
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
 from loanpilot.pages import overview
-from loanpilot.pages.new_application import estimate_bureau_score
+from loanpilot.pages.new_application import (
+    _document_texts,
+    _initial_intake,
+    _pdf_bytes,
+    _uploaded_identity_result,
+    estimate_bureau_score,
+)
 
 
 @pytest.fixture(scope="module")
@@ -35,6 +45,7 @@ def _navigation_app(store: SQLiteStore, start_page: str) -> AppTest:
     """Build a multipage AppTest around an isolated SQLite store."""
     script = (
         "import streamlit as st\n"
+        "st.session_state['auth'] = {'name': 'Phase6 Analyst', 'role': 'Credit Analyst'}\n"
         "from loanpilot.data.store import SQLiteStore\n"
         "from loanpilot.pages import ai_assessment, new_application, overview\n"
         f"store_path = {str(store.path)!r}\n"
@@ -64,18 +75,30 @@ def _render_page(module: str, store: SQLiteStore) -> AppTest:
 def test_custom_applicant_submits_and_lands_on_assessment(
     seeded_store, monkeypatch
 ) -> None:
-    """Four-step intake generates flagged documents and opens the submitted case."""
+    """Five-step new-customer intake generates identity and financial evidence."""
     documents_dir = config.DATA_DIR / "test-final-flow-documents"
+    uploads_dir = config.PROJECT_ROOT / "data" / "test-final-flow-uploads"
     monkeypatch.setattr(config, "DOCUMENTS_DIR", documents_dir)
+    monkeypatch.setattr(config, "DATA_DIR", uploads_dir)
     app = _navigation_app(seeded_store, "new_application").run()
-    assert app.button(key="intake_next").disabled
+    assert not app.button(key="intake_next").disabled
+    app.button(key="intake_next").click().run()
+    assert app.session_state["intake_step"] == 0
+    assert any("Name and city are required" in item.value for item in app.warning)
     app.text_input(key="intake_widget_name").set_value("Test Applicant").run()
     app.text_input(key="intake_widget_city").set_value("Pune").run()
     app.text_input(key="intake_widget_mobile").set_value("9000000000").run()
     app.button(key="intake_next").click().run()
+    assert app.session_state["intake_step"] == 1
+    assert any("Use fake or sample documents only" in item.value for item in app.warning)
+    assert not any("could not read documents" in item.value for item in app.info)
+    app.button(key="intake_generate_identity").click().run()
+    assert app.session_state["intake"]["kyc"]["status"] == "verified"
+    app.button(key="intake_next").click().run()
     app.text_input(key="intake_widget_employer").set_value("Demo Employer").run()
     app.button(key="intake_next").click().run()
     app.button(key="intake_next").click().run()
+    assert app.session_state["intake_step"] == 4
     assert app.radio(key="intake_widget_document_mode").value.startswith("Generate")
     app.checkbox(key="intake_widget_document_problem").check().run()
     app.selectbox(key="intake_widget_problem_type").select(
@@ -86,9 +109,17 @@ def test_custom_applicant_submits_and_lands_on_assessment(
     app.button(key="submit_application").click().run(timeout=20)
     assert not app.exception
     application_id = app.session_state["intake_application_id"]
+    assert (
+        list_applications({"search": application_id}, seeded_store).iloc[0]["owner"]
+        == "Phase6 Analyst"
+    )
     assert app.title[0].value == "New Application"
     docs = get_documents(application_id, seeded_store)
-    assert len(docs) == 3
+    assert len(docs) == 4
+    assert "identity_sheet" in set(docs.doc_type)
+    payload = get_kyc(application_id, seeded_store).iloc[0]["payload"]
+    assert payload["status"] == "verified"
+    assert payload["method"] == "Demo identity"
     statement = docs.loc[
         docs.doc_type == "bank_statement_summary", "text_content"
     ].iloc[0]
@@ -111,6 +142,348 @@ def test_custom_applicant_submits_and_lands_on_assessment(
     folder = documents_dir / application_id
     if folder.exists():
         shutil.rmtree(folder)
+    identity_folder = uploads_dir / "uploads" / application_id
+    if identity_folder.exists():
+        shutil.rmtree(identity_folder)
+
+
+def test_document_controls_keep_values_when_switching_modes(tmp_path) -> None:
+    """Checkbox choices persist when their controls are temporarily hidden."""
+    store = SQLiteStore(tmp_path / "intake-controls.db")
+    create_schema(store)
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from loanpilot.pages.new_application import _initial_intake, render\n"
+        "from loanpilot.data.store import SQLiteStore\n"
+        "st.session_state['intake_step'] = 4\n"
+        "st.session_state['intake'] = {**_initial_intake(), "
+        "'name': 'Test Applicant', 'city': 'Pune', 'employer': 'Demo Employer'}\n"
+        f"render(SQLiteStore({str(store.path)!r}))\n"
+    ).run()
+    problem_key = "intake_widget_document_problem"
+    mode_key = "intake_widget_document_mode"
+    problem_box = app.checkbox(key=problem_key)
+    problem_box.check().run()
+    assert app.checkbox(key=problem_key).value is True
+
+    app.radio(key=mode_key).set_value("Upload my own PDFs").run()
+    app.radio(key=mode_key).set_value(
+        "Generate synthetic documents from my entries"
+    ).run()
+    assert app.checkbox(key=problem_key).value is True
+    assert app.session_state["intake"]["document_problem"] is True
+
+    app.checkbox(key="intake_widget_consent").check().run()
+    assert app.checkbox(key="intake_widget_consent").value is True
+
+
+def test_autofill_uses_synthetic_details_and_keeps_consent_unchecked(tmp_path) -> None:
+    """Autofill supplies a coherent example while leaving consent to the user."""
+    store = SQLiteStore(tmp_path / "intake-autofill.db")
+    create_schema(store)
+    app = _render_page("new_application", store).run()
+    app.text_input(key="intake_widget_name").set_value("Old entry").run()
+    app.button(key="intake_autofill_demo").click().run()
+
+    data = app.session_state["intake"]
+    assert app.session_state["intake_step"] == 0
+    assert data["name"] == "Demo Applicant"
+    assert data["city"] == "Pune"
+    assert data["mobile"] == "9000000000"
+    assert data["employer"] == "Aarambh Demo Services"
+    assert data["income"] == 60000.0
+    assert data["consent"] is False
+    assert data["declaration"] is False
+    assert app.text_input(key="intake_widget_name").value == "Demo Applicant"
+
+
+def _create_policy_case(store: SQLiteStore, kyc: dict) -> str:
+    """Create a policy-clean synthetic application so KYC controls the outcome."""
+    from datetime import date, datetime
+    from uuid import uuid4
+
+    data = _initial_intake()
+    data.update(
+        {
+            "name": "Strong Test Applicant",
+            "dob": "1990-01-01",
+            "city": "Pune",
+            "mobile": "9000000000",
+            "employer": "Synthetic Test Employer",
+            "employment_type": "Salaried",
+            "job_months": 60,
+            "experience_months": 120,
+            "income": 100000.0,
+            "existing_emi": 0.0,
+            "amount": 200000.0,
+            "tenure": 36,
+            "purpose": "Education",
+            "pan": f"DEMO{uuid4().hex[:8].upper()}",
+            "document_problem": False,
+        }
+    )
+    documents = _document_texts(data)
+    application_id = f"APP-KYC-{uuid4().hex[:10].upper()}"
+    applicant = {
+        "name": data["name"],
+        "dob": data["dob"],
+        "age": 36,
+        "city": data["city"],
+        "mobile": data["mobile"],
+        "employer": data["employer"],
+        "employment_type": data["employment_type"],
+        "current_tenure_months": data["job_months"],
+        "total_experience_months": data["experience_months"],
+        "net_monthly_income": data["income"],
+        "existing_emi": data["existing_emi"],
+        "pan_demo_id": data["pan"],
+    }
+    return create_intake_application(
+        applicant,
+        {
+            "requested_amount": data["amount"],
+            "tenure_months": data["tenure"],
+            "purpose": data["purpose"],
+            "submitted_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        {
+            "provider": "Synthetic test bureau",
+            "score": 800,
+            "thin_file": False,
+            "active_accounts": 1,
+            "enquiries_6m": 0,
+            "max_dpd_24m": 0,
+            "written_off": False,
+            "utilization_pct": 5,
+        },
+        kyc,
+        [
+            {
+                "doc_type": doc_type,
+                "file_name": f"{doc_type}.pdf",
+                "file_path": f"data/test/{application_id}/{doc_type}.pdf",
+                "text_content": text,
+            }
+            for doc_type, text in documents.items()
+        ],
+        store,
+        application_id=application_id,
+    )
+
+
+def _run_page_callback(source: str) -> AppTest:
+    """Run one no-widget case callback inside a supported Streamlit context."""
+    return AppTest.from_string(source).run()
+
+
+def test_existing_customer_intake_skips_ekyc_and_reuses_customer(tmp_path, monkeypatch) -> None:
+    """Existing core-banking customer intake retains the original customer ID."""
+    store = SQLiteStore(tmp_path / "existing-customer.db")
+    seed_demo_data(store, reset=True)
+    customer = list_intake_customers(store).iloc[0]
+    original_customer_count = store.table_counts()["cur_customers"]
+    monkeypatch.setattr(
+        config,
+        "DOCUMENTS_DIR",
+        config.PROJECT_ROOT / "data" / "test-existing-customer-documents",
+    )
+    app = _render_page("new_application", store).run()
+    app.radio(key="intake_widget_customer_type").set_value("Existing customer").run()
+    assert app.session_state["intake"]["customer_id"] == customer["customer_id"]
+    assert app.session_state["intake"]["kyc"]["method"] == "KYC on file (core banking)"
+    assert "From core banking" in "\n".join(item.value for item in app.caption)
+    app.button(key="intake_next").click().run()
+    assert app.session_state["intake_step"] == 1
+    assert "intake_widget_identity_mode" not in app.session_state
+    app.button(key="intake_next").click().run()
+    app.button(key="intake_next").click().run()
+    assert app.session_state["intake_step"] == 3
+    app.checkbox(key="intake_widget_consent").check().run()
+    app.checkbox(key="intake_widget_declaration").check().run()
+    app.button(key="submit_application").click().run()
+    assert not app.exception
+    application_id = app.session_state["intake_application_id"]
+    saved = get_application(application_id, store).iloc[0]
+    assert saved["customer_id"] == customer["customer_id"]
+    assert store.table_counts()["cur_customers"] == original_customer_count
+    kyc = get_kyc(application_id, store).iloc[0]["payload"]
+    assert kyc["status"] == "verified"
+    assert kyc["method"] == "KYC on file (core banking)"
+
+
+def test_pending_kyc_refers_and_verified_rerun_keeps_trace_history(tmp_path, monkeypatch) -> None:
+    """The pending KYC panel completes identity and reruns with trace history."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    store = SQLiteStore(tmp_path / "kyc-rerun.db")
+    create_schema(store)
+    pending = {
+        "status": "pending",
+        "pan_status": "pending",
+        "name_match": 0.0,
+        "name_match_score": 0.0,
+        "method": "Not completed",
+        "reason": "eKYC was skipped.",
+    }
+    application_id = _create_policy_case(store, pending)
+    from loanpilot.agent.orchestrator import run_assessment
+
+    first = run_assessment(application_id, store)
+    assert first["recommendation"] == "Refer"
+    clause = next(item for item in first["policy"]["clauses"] if item["clause_id"] == "CP-6.1")
+    assert clause["status"] == "refer"
+    assert clause["observed"]["reason"] == "Complete eKYC before a decision."
+
+    script = (
+        "import streamlit as st\n"
+        "from loanpilot.pages.applications import render\n"
+        "from loanpilot.data.store import SQLiteStore\n"
+        f"st.session_state['selected_application'] = {application_id!r}\n"
+        f"render(SQLiteStore({str(store.path)!r}))\n"
+    )
+    app = _run_page_callback(script)
+    assert not app.exception
+    assert any("Complete eKYC to continue" in element.value for element in app.warning)
+    app.radio(key=f"case_kyc_method_{application_id}").set_value("Use demo identity").run()
+    app.button(key=f"case_kyc_complete_{application_id}").click().run()
+    assert get_kyc(application_id, store).iloc[0]["payload"]["status"] == "verified"
+    assert "eKYC completed" in " ".join(
+        get_audit_log(application_id, store)["action"].tolist()
+    )
+    rerun_button = next(button for button in app.button if button.label == "Re-run AI assessment")
+    rerun_button.click().run(timeout=60)
+    saved = get_application(application_id, store).iloc[0]
+    assert saved["ai_recommendation"] == "Approve"
+    trace = store.query(
+        "SELECT DISTINCT run_id FROM cur_agent_trace WHERE application_id = ?",
+        (application_id,),
+    )
+    assert len(trace) == 2
+    assert len(get_agent_trace(application_id, first["run_id"], store)) == 5
+    assert len(get_agent_trace(application_id, store=store)) == 5
+
+
+def test_kyc_manual_review_reason_and_invalid_pan_decline(tmp_path, monkeypatch) -> None:
+    """A low name match refers for manual review; invalid PAN is declined."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    store = SQLiteStore(tmp_path / "kyc-policy.db")
+    create_schema(store)
+    from loanpilot.agent.orchestrator import run_assessment
+
+    from loanpilot.pages.new_application import _apply_identity_problem
+
+    problem = {
+        **_initial_intake(),
+        "document_problem": True,
+        "problem_type": "Name differs from the identity document (match about 0.70)",
+        "kyc": {
+            "status": "verified",
+            "pan_status": "verified",
+            "name_match": 1.0,
+            "name_match_score": 1.0,
+            "method": "Demo identity",
+        },
+    }
+    _apply_identity_problem(problem)
+    assert problem["kyc"]["status"] == "pending"
+    assert problem["kyc"]["name_match"] == 0.70
+    mismatch_id = _create_policy_case(store, problem["kyc"])
+    mismatch = run_assessment(mismatch_id, store)
+    assert mismatch["recommendation"] == "Refer"
+    mismatch_clause = next(
+        item for item in mismatch["policy"]["clauses"] if item["clause_id"] == "CP-6.1"
+    )
+    assert mismatch_clause["status"] == "refer"
+    assert mismatch_clause["observed"]["reason"] == "Manual identity review is required."
+
+    invalid_id = _create_policy_case(
+        store,
+        {
+            "status": "invalid",
+            "pan_status": "not_found",
+            "name_match": 1.0,
+            "name_match_score": 1.0,
+            "method": "eKYC document upload (simulated registry check)",
+        },
+    )
+    invalid = run_assessment(invalid_id, store)
+    assert invalid["recommendation"] == "Decline"
+    invalid_clause = next(
+        item for item in invalid["policy"]["clauses"] if item["clause_id"] == "CP-6.1"
+    )
+    assert invalid_clause["status"] == "decline"
+    assert invalid_clause["observed"]["reason"] == "PAN is invalid or not found."
+
+
+def test_identity_upload_matching_and_unreadable_inputs(tmp_path, monkeypatch) -> None:
+    """Readable matching PDFs verify; missing text stays pending without exceptions."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    intake = _initial_intake()
+    intake.update({"name": "Synthetic Holder", "pan": "DEMO1234AB"})
+    matching = {}
+    for doc_type in ("pan_identity", "aadhaar_identity"):
+        text = f"Name: Synthetic Holder\nPAN: {intake['pan']}"
+        matching[doc_type] = {
+            "name": f"{doc_type}.pdf",
+            "mime_type": "application/pdf",
+            "content": _pdf_bytes("Synthetic identity", text.splitlines()),
+        }
+    result = _uploaded_identity_result({**intake, "identity_documents": matching})
+    assert result["status"] == "verified"
+    assert result["name_match"] == 1.0
+    assert result["pan_status"] == "verified"
+
+    unreadable = {
+        doc_type: {
+            "name": f"{doc_type}.pdf",
+            "mime_type": "application/pdf",
+            "content": b"not a readable PDF",
+        }
+        for doc_type in ("pan_identity", "aadhaar_identity")
+    }
+    failed = _uploaded_identity_result({**intake, "identity_documents": unreadable})
+    assert failed["status"] == "pending"
+    assert failed["reason"] == "could not read documents"
+
+
+def test_rerun_is_blocked_after_human_decision(tmp_path, monkeypatch) -> None:
+    """The callback refuses a fresh trace after a human has decided."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    store = SQLiteStore(tmp_path / "kyc-human-decision.db")
+    create_schema(store)
+    from loanpilot.agent.orchestrator import run_assessment
+
+    application_id = _create_policy_case(
+        store,
+        {
+            "status": "verified",
+            "pan_status": "verified",
+            "name_match": 1.0,
+            "name_match_score": 1.0,
+            "method": "Demo identity",
+        },
+    )
+    result = run_assessment(application_id, store)
+    decision = "Approve"
+    record_human_decision(
+        application_id,
+        decision,
+        "Approved after reviewing all synthetic evidence.",
+        human_decision_is_override(result["recommendation"], decision),
+        "Demo Reviewer",
+        "2026-10-29T12:00:00",
+        "Sanction",
+        store,
+    )
+    before = len(get_agent_trace(application_id, store=store))
+    script = (
+        "from loanpilot.pages.applications import _rerun_case_assessment\n"
+        "from loanpilot.data.store import SQLiteStore\n"
+        f"_rerun_case_assessment({application_id!r}, SQLiteStore({str(store.path)!r}))\n"
+    )
+    app = _run_page_callback(script)
+    assert not app.exception
+    assert "cannot be rerun after a human decision" in app.session_state["kyc_rerun_error"]
+    assert len(get_agent_trace(application_id, store=store)) == before
 
 
 def test_custom_applicant_persists_case_documents_and_mock_responses(tmp_path) -> None:

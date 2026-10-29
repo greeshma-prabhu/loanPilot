@@ -67,8 +67,13 @@
     {
       "clause_id": "CP-6.1",
       "title": "Identity checks",
-      "text": "PAN must be verified and the KYC name-match score must be at least 0.85.",
-      "criteria": {"pan_status": "verified", "name_match_score_min": 0.85}
+      "text": "Verified KYC with a name match of at least 0.85 passes; pending or a lower name match is referred for completion or manual review; an invalid or missing PAN is declined.",
+      "criteria": {
+        "verified_name_match_min": 0.85,
+        "pending_outcome": "refer",
+        "low_name_match_outcome": "refer",
+        "invalid_pan_outcome": "decline"
+      }
     },
     {
       "clause_id": "CP-6.2",

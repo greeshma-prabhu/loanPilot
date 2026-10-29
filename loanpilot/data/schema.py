@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS cur_applications (
     submitted_at TEXT NOT NULL,
     stage TEXT NOT NULL,
     persona_key TEXT,
+    owner TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (customer_id) REFERENCES cur_customers(customer_id)
 );
 CREATE TABLE IF NOT EXISTS cur_decisions (
@@ -270,4 +271,11 @@ def create_schema(store: SQLiteStore) -> None:
         if "mobile" not in customer_columns:
             connection.execute(
                 "ALTER TABLE cur_customers ADD COLUMN mobile TEXT NOT NULL DEFAULT ''"
+            )
+        application_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(cur_applications)")
+        }
+        if "owner" not in application_columns:
+            connection.execute(
+                "ALTER TABLE cur_applications ADD COLUMN owner TEXT NOT NULL DEFAULT ''"
             )

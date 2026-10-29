@@ -15,8 +15,8 @@ def _architecture_diagram() -> None:
       node [shape=box, style="rounded,filled", fontname="Arial", fontsize=8,
             color="#b9c9c7", fontcolor="#163d3c", margin="0.08,0.06"];
       edge [color="#75928f", penwidth=1.1, arrowsize=0.55];
-      sources [label="Sources\nCore banking · documents\nBureau mock · KYC mock · policy docs", fillcolor="#fff0cf"];
-      ingest [label="Ingestion\nGuided intake · PDF reading\nSeed / simulator", fillcolor="#d9f0e2"];
+      sources [label="Sources\nCore banking · documents\neKYC upload · bureau/KYC mocks", fillcolor="#fff0cf"];
+      ingest [label="Ingestion\nGuided intake · PDF reading\nSimulated identity check", fillcolor="#fff0cf"];
       subgraph cluster_lake {
         label="Enterprise data platform"; style="rounded"; color="#d7e2e1";
         raw [label="RAW\nas received", fillcolor="#e8f4f2"];
@@ -72,8 +72,8 @@ def render() -> None:
         st.subheader("What each layer does")
         st.dataframe(
             [
-                {"Layer": "Sources", "Purpose": "Synthetic account facts, PDFs, mock bureau/KYC responses and policy documents."},
-                {"Layer": "Ingestion", "Purpose": "Guided intake stores submitted fields and registered document evidence."},
+                {"Layer": "Sources", "Purpose": "Synthetic account facts, PDFs, mock bureau/KYC responses, eKYC identity uploads and policy documents."},
+                {"Layer": "Ingestion", "Purpose": "Guided intake stores submitted fields, identity evidence and registered document references."},
                 {"Layer": "Lakehouse", "Purpose": "RAW keeps received data; CURATED joins it; SERVING exposes decision features."},
                 {"Layer": "Feature and policy", "Purpose": "Builds ratios and applies deterministic policy rules."},
                 {"Layer": "Agent orchestrator", "Purpose": "Runs five ordered steps and records tool calls; it cannot sanction."},
@@ -107,6 +107,8 @@ def render() -> None:
                 {"Name": "Recommendation Agent", "Role": "Prepare a recommendation and handoff.", "Inputs": "Policy and financial results", "Outputs": "Approve / Refer / Decline and reasons", "Status": "Real"},
                 {"Name": "Document extraction", "Role": "Read evidence text and flag discrepancies.", "Inputs": "Synthetic PDF", "Outputs": "Fields and evidence flags", "Status": gemini_status},
                 {"Name": "Bureau and KYC simulators", "Role": "Provide synthetic external-response shapes.", "Inputs": "Synthetic application", "Outputs": "Mock response payloads", "Status": "Simulated"},
+                {"Name": "eKYC upload reader and registry check", "Role": "Read synthetic identity evidence and compare holder names.", "Inputs": "Synthetic PDF/image or demo identity sheet", "Outputs": "Simulated identity status and match score", "Status": "Simulated"},
+                {"Name": "KYC on file (core banking)", "Role": "Reuse existing synthetic customer identity status.", "Inputs": "Synthetic core customer record", "Outputs": "Verified KYC on file", "Status": "Simulated"},
                 {"Name": "Policy, rules and pricing", "Role": "Apply deterministic checks and rate grid.", "Inputs": "Features and policy clauses", "Outputs": "Clause results and price", "Status": "Real"},
             ],
             width="stretch",
@@ -115,7 +117,7 @@ def render() -> None:
     with tabs[3]:
         st.subheader("Data flow in five steps")
         for step in (
-            "1. Intake saves an application and its synthetic or uploaded documents.",
+            "1. Intake saves an application, synthetic or uploaded documents, and simulated eKYC evidence.",
             "2. RAW records preserve evidence and mock service responses.",
             "3. CURATED and SERVING join records and calculate decision features.",
             "4. The orchestrator calls tools and deterministic policy code in five steps.",
@@ -126,6 +128,7 @@ def render() -> None:
         st.subheader("Governance and privacy")
         st.markdown(
             "- Human-in-the-loop: a person decides before sanction; AI cannot approve a sanction.\n"
+            "- Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.\n"
             "- Audit: steps, tool outputs, reviewer action and written override reasons are recorded.\n"
             "- PII stance: this demo uses synthetic people and fake `DEMO…` identifiers only. "
             "Uploaded files should also be synthetic.\n"

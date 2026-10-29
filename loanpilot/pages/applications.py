@@ -3,6 +3,7 @@
 from datetime import datetime
 from html import escape
 import json
+import mimetypes
 from pathlib import Path
 import re
 from typing import Any
@@ -37,6 +38,10 @@ from loanpilot.data.queries import (
     get_sanction,
     get_transactions,
     list_applications,
+    register_document,
+    save_kyc_response,
+    clear_llm_cache,
+    append_audit_event,
 )
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
@@ -375,6 +380,267 @@ def _payslip_net(documents: pd.DataFrame, fallback: float) -> float:
     return float(match.group(1).replace(",", "")) if match else fallback
 
 
+def _case_kyc_document_data(application_id: str, application: pd.Series) -> dict:
+    """Build identity evidence input from the case-specific widgets."""
+    from loanpilot.pages.new_application import _IDENTITY_DOC_TYPES
+
+    documents = {}
+    for doc_type in _IDENTITY_DOC_TYPES:
+        uploaded = st.session_state.get(f"case_kyc_upload_{application_id}_{doc_type}")
+        if uploaded is not None:
+            documents[doc_type] = {
+                "name": Path(uploaded.name.replace("\\", "/")).name,
+                "mime_type": mimetypes.guess_type(uploaded.name)[0]
+                or "application/octet-stream",
+                "content": uploaded.getvalue(),
+            }
+    return {
+        "name": str(application["name"]),
+        "pan": str(application["pan_demo_id"]),
+        "identity_documents": documents,
+    }
+
+
+def _complete_case_kyc(application_id: str, store: SQLiteStore) -> None:
+    """Run the same simulated upload/demo identity choices inside a case."""
+    from loanpilot.pages.new_application import (
+        _IDENTITY_DOC_TYPES,
+        _pdf_bytes,
+        _save_identity_documents,
+        _uploaded_identity_result,
+    )
+
+    rows = get_application(application_id, store)
+    if rows.empty:
+        st.session_state["kyc_completion_error"] = "Application was not found."
+        return
+    application = rows.iloc[0]
+    method = st.session_state.get(
+        f"case_kyc_method_{application_id}", "Use demo identity"
+    )
+    existing_kyc = get_kyc(application_id, store)
+    prior = {} if existing_kyc.empty else existing_kyc.iloc[0]["payload"]
+    if method == "Use demo identity":
+        name = str(application["name"])
+        pan = str(application["pan_demo_id"])
+        text = "\n".join(
+            (
+                "SYNTHETIC IDENTITY SHEET",
+                f"Name: {name}",
+                f"PAN demo identifier: {pan}",
+                "Registry result: verified (simulated)",
+                "SYNTHETIC SAMPLE, DEMO ONLY",
+            )
+        )
+        data = {
+            "identity_sheet": {
+                "name": "identity_sheet.pdf",
+                "content": _pdf_bytes("Synthetic identity sheet", text.splitlines()),
+                "text": text,
+            },
+            "identity_documents": {},
+            "kyc": {},
+        }
+        name_match = 1.0
+        pan_status = "verified"
+        reason = ""
+        references = ["identity_sheet.pdf"]
+        method_label = "Demo identity"
+    else:
+        data = _case_kyc_document_data(application_id, application)
+        kyc_result = _uploaded_identity_result(data)
+        name_match = float(kyc_result.get("name_match", 0))
+        pan_status = str(kyc_result.get("pan_status", "pending"))
+        reason = str(kyc_result.get("reason", ""))
+        references = [
+            document["name"]
+            for document in data["identity_documents"].values()
+        ]
+        method_label = "eKYC document upload (simulated registry check)"
+        if reason == "could not read documents":
+            kyc_result.update(
+                {
+                    "status": "pending",
+                    "pan_status": "pending",
+                    "reason": "could not read documents",
+                    "method": method_label,
+                    "document_references": references,
+                    "pan_demo_id": str(application["pan_demo_id"]),
+                }
+            )
+            reason = "could not read documents"
+        else:
+            reason = str(kyc_result.get("reason", ""))
+    mismatch_injected = prior.get("demo_problem") == "name_mismatch"
+    if mismatch_injected:
+        name_match = 0.70
+        reason = "Name mismatch was injected for this demo; manual identity review is still required."
+    kyc_status = (
+        "invalid"
+        if pan_status in {"invalid", "not_found", "not found"}
+        else "pending"
+        if pan_status == "pending" or name_match < 0.85
+        else "verified"
+    )
+    kyc = {
+        **prior,
+        "status": kyc_status,
+        "pan_status": pan_status,
+        "name_match": name_match,
+        "name_match_score": name_match,
+        "method": method_label,
+        "verified_at": datetime.now().isoformat(timespec="seconds")
+        if kyc_status == "verified"
+        else None,
+        "reason": reason,
+        "document_references": references,
+        "pan_demo_id": str(application["pan_demo_id"]),
+        "provider": "Simulated identity check",
+        "cersai": "not applicable (unsecured)",
+    }
+    if mismatch_injected:
+        kyc["demo_problem"] = "name_mismatch"
+    try:
+        documents = _save_identity_documents(application_id, data)
+        for document in documents:
+            register_document(application_id, document, store)
+        save_kyc_response(application_id, kyc, store)
+    except (OSError, ValueError) as error:
+        st.session_state["kyc_completion_error"] = str(error)
+        return
+    append_audit_event(
+        application_id,
+        datetime.now().isoformat(timespec="seconds"),
+        "LoanPilot Simulated eKYC",
+        "eKYC completed" if kyc["status"] == "verified" else "eKYC pending",
+        f"{kyc['method']}; status {kyc['status']}; name match {kyc['name_match']:.2f}.",
+        store,
+    )
+
+
+def _rerun_case_assessment(application_id: str, store: SQLiteStore) -> None:
+    """Create a fresh assessment trace only when there is no human decision."""
+    application = get_application(application_id, store)
+    if application.empty:
+        st.session_state["kyc_rerun_error"] = "Application was not found."
+        return
+    if pd.notna(application.iloc[0]["human_decision"]):
+        st.session_state["kyc_rerun_error"] = (
+            "AI assessment cannot be rerun after a human decision."
+        )
+        return
+    from loanpilot.agent.orchestrator import run_assessment
+
+    clear_llm_cache(application_id, store)
+    result = run_assessment(application_id, store)
+    st.session_state["kyc_rerun_success"] = (
+        application_id,
+        result["recommendation"],
+    )
+
+
+def _render_kyc_panel(application_id: str, store: SQLiteStore) -> None:
+    """Render the simulated KYC payload and inline completion flow."""
+    response = get_kyc(application_id, store)
+    payload = {} if response.empty else response.iloc[0]["payload"]
+    status = str(payload.get("status", payload.get("pan_status", "pending")))
+    name_match = float(payload.get("name_match", payload.get("name_match_score", 0)) or 0)
+    documents = get_documents(application_id, store)
+    identity_documents = documents.loc[
+        documents["doc_type"].isin(
+            {"pan_identity", "aadhaar_identity", "identity_sheet"}
+        )
+    ] if not documents.empty else documents
+    with st.container(border=True):
+        st.markdown(
+            f"#### KYC · {implementation_badge('simulated')}",
+            unsafe_allow_html=True,
+        )
+        st.write(f"Status: **{status.title()}**")
+        st.write(f"Name match: **{name_match:.2f}**")
+        st.write(f"Method: **{payload.get('method', 'Unavailable')}**")
+        if payload.get("reason"):
+            st.caption(str(payload["reason"]))
+        st.markdown("**Identity documents**")
+        if identity_documents.empty:
+            st.caption("No identity documents have been registered.")
+        else:
+            for document in identity_documents.to_dict("records"):
+                st.write(f"{document['doc_type'].replace('_', ' ').title()} · {document['file_name']}")
+                path = (config.PROJECT_ROOT / Path(document["file_path"])).resolve()
+                if path.is_relative_to(config.PROJECT_ROOT.resolve()) and path.is_file():
+                    st.download_button(
+                        f"Download {document['file_name']}",
+                        data=path.read_bytes(),
+                        file_name=document["file_name"],
+                        mime=mimetypes.guess_type(document["file_name"])[0] or "application/octet-stream",
+                        key=f"case_kyc_download_{application_id}_{document['doc_id']}",
+                    )
+        if status == "pending" or name_match < 0.85:
+            st.warning("Complete eKYC to continue")
+            method_key = f"case_kyc_method_{application_id}"
+            st.radio(
+                "Identity method",
+                ("Upload documents", "Use demo identity"),
+                key=method_key,
+            )
+            selected_method = st.session_state.get(method_key, "Upload documents")
+            if selected_method == "Upload documents":
+                st.warning(
+                    "Use fake or sample documents only. Do not upload real ID documents."
+                )
+                for doc_type, label in (
+                    ("pan_identity", "PAN-type document"),
+                    ("aadhaar_identity", "Aadhaar-type document"),
+                ):
+                    st.file_uploader(
+                        label,
+                        type=["pdf", "png", "jpg", "jpeg"],
+                        key=f"case_kyc_upload_{application_id}_{doc_type}",
+                    )
+            st.button(
+                "Complete eKYC (demo)",
+                key=f"case_kyc_complete_{application_id}",
+                on_click=_complete_case_kyc,
+                args=(application_id, store),
+                width="stretch",
+            )
+        application = get_application(application_id, store)
+        human_decision = (
+            None if application.empty else application.iloc[0]["human_decision"]
+        )
+        rerun_key = (application_id, payload.get("verified_at"))
+        notice = st.session_state.pop("kyc_rerun_success", None)
+        if notice and notice[0] == application_id:
+            st.success(f"AI assessment rerun: {notice[1]}. A new trace is saved.")
+        error = st.session_state.pop("kyc_rerun_error", None)
+        if error:
+            st.error(error)
+        completion_error = st.session_state.pop("kyc_completion_error", None)
+        if completion_error:
+            st.error(completion_error)
+        rerun_available = status == "verified" or (
+            payload.get("reason") == "manual identity review"
+            or "manual identity review" in str(payload.get("reason", "")).casefold()
+        )
+        if rerun_available:
+            st.button(
+                "Re-run AI assessment",
+                key=f"case_kyc_rerun_{application_id}_{rerun_key[1]}",
+                on_click=_rerun_case_assessment,
+                args=(application_id, store),
+                disabled=pd.notna(human_decision),
+                width="stretch",
+                help=(
+                    "Unavailable after a human decision."
+                    if pd.notna(human_decision)
+                    else "Creates a new trace while retaining prior assessment history."
+                ),
+            )
+            if pd.notna(human_decision):
+                st.caption("Assessment rerun is unavailable after a human decision.")
+
+
 def _render_summary(application: pd.Series, documents: pd.DataFrame) -> None:
     """Render applicant profile, request, indicative EMI, and persona story."""
     st.subheader("Applicant profile")
@@ -444,7 +710,8 @@ def _render_documents(
                     f"Download {document['file_name']}",
                     data=path.read_bytes(),
                     file_name=document["file_name"],
-                    mime="application/pdf",
+                    mime=mimetypes.guess_type(document["file_name"])[0]
+                    or "application/octet-stream",
                     key=f"download_{document['doc_id']}",
                     width="stretch",
                 )
@@ -508,7 +775,6 @@ def _render_checks(
         unsafe_allow_html=True,
     )
     bureau = _single_bureau(application_id, store)
-    kyc = _single_kyc(application_id, store)
 
     with st.container(border=True):
         st.markdown("#### Core banking record")
@@ -536,10 +802,7 @@ def _render_checks(
         )
         st.write(f"Written off: {'Yes' if bureau.get('written_off') else 'No'}")
 
-    with st.container(border=True):
-        st.markdown("#### KYC response")
-        st.write(f"PAN status: {kyc.get('pan_status', 'Unavailable')}")
-        st.write(f"Name-match score: {kyc.get('name_match_score', 'Unavailable')}")
+    _render_kyc_panel(application_id, store)
 
     with st.container(border=True):
         st.markdown("#### CERSAI")
@@ -797,6 +1060,9 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     with st.expander("Technical case reference"):
         st.code(str(application_id))
     stage_tracker(str(application["stage"]))
+    if st.session_state.get("case_kyc_open") == application_id:
+        _render_kyc_panel(application_id, store)
+        st.session_state.pop("case_kyc_open", None)
 
     tabs = st.tabs(
         [

@@ -40,11 +40,6 @@ from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer
 
-REVIEWERS = (
-    "Aarav Kulkarni (Credit Analyst)",
-    "Nisha Desai (Credit Manager)",
-    "Greeshma Prabhu",
-)
 ACTIONS = {
     "approve": "Approve",
     "approve_with_conditions": "Approve with conditions",
@@ -255,7 +250,9 @@ def _submit_review_decision(
     if action is None:
         st.session_state[error_key] = "Select a valid review action."
         return
-    reviewer = str(st.session_state.get(f"reviewer_{application_id}", REVIEWERS[0]))
+    reviewer = str(st.session_state.get("auth", {}).get("name", ""))
+    if not reviewer:
+        raise RuntimeError("An authenticated reviewer is required to save decisions.")
     reason = str(st.session_state.get(f"decision_reason_{application_id}", "")).strip()
     if len(reason) < 20:
         st.session_state[error_key] = "Enter a written reason of at least 20 characters."
@@ -315,10 +312,12 @@ def _render_decision_panel(
 ) -> None:
     """Render the pending-case form using case-specific stable widget keys."""
     st.subheader("Your decision")
-    st.caption("Fictional reviewer names only; this demo has no authentication.")
+    st.caption(
+        "Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed."
+    )
     action_key = f"review_action_{application_id}"
-    reviewer_key = f"reviewer_{application_id}"
     reason_key = f"decision_reason_{application_id}"
+    reviewer = str(st.session_state.get("auth", {}).get("name", ""))
     default_action = {
         "Approve": "approve",
         "Refer": "refer_up",
@@ -343,7 +342,12 @@ def _render_decision_panel(
             st.warning(
                 "This differs from the AI recommendation (CP-8.2): a written reason is required."
             )
-        reviewer = st.selectbox("Reviewer (demo)", REVIEWERS, key=reviewer_key)
+        st.text_input(
+            "Reviewer",
+            value=reviewer,
+            key=f"reviewer_display_{application_id}",
+            disabled=True,
+        )
         if action_code == "modify_terms":
             if rate is None:
                 st.warning("No CP-7.1 grid rate is available; terms cannot be recalculated.")
@@ -516,7 +520,9 @@ def _submit_disbursement(application_id: str, store: SQLiteStore) -> None:
         condition["complete"] = bool(
             st.session_state.get(f"hr_condition_{application_id}_{index}", False)
         )
-    reviewer = str(st.session_state.get(f"hr_reviewer_{application_id}", REVIEWERS[0]))
+    reviewer = str(st.session_state.get("auth", {}).get("name", ""))
+    if not reviewer:
+        raise RuntimeError("An authenticated reviewer is required to update conditions.")
     try:
         update_conditions(application_id, conditions, reviewer, store)
         run_simulated_disbursement(application_id, store)
@@ -652,6 +658,9 @@ def _render_case_panel(
 
 def render(store: SQLiteStore | None = None) -> None:
     """Render the review queue with summary metrics, inline case panels, and action form."""
+    if not st.session_state.get("auth"):
+        st.info("Sign in to access Human Review.")
+        return
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)

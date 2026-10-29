@@ -236,6 +236,7 @@ def test_human_review_page_renders_each_persona(review_store, application_id) ->
     """The decision-first human review workspace renders every persona."""
     script = (
         "import streamlit as st\n"
+        "st.session_state['auth'] = {'name': 'Test Reviewer', 'role': 'Credit Analyst'}\n"
         "from loanpilot.pages.human_review import render\n"
         "from loanpilot.data.store import SQLiteStore\n"
         f"st.session_state['review_open'] = {application_id!r}\n"

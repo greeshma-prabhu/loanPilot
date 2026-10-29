@@ -76,6 +76,7 @@ def seed_custom_cases(
                     "text_content": text,
                 }
             )
+        existing_customer = data.get("customer_type") == "Existing customer"
         applicant = {
             "name": data["name"],
             "dob": dob.isoformat(),
@@ -89,6 +90,7 @@ def seed_custom_cases(
             "net_monthly_income": float(data["income"]),
             "existing_emi": float(data["existing_emi"]),
             "pan_demo_id": data["pan"],
+            "existing_customer": existing_customer,
         }
         application = {
             "requested_amount": float(data["amount"]),
@@ -107,13 +109,41 @@ def seed_custom_cases(
             "utilization_pct": 0.0,
             "document_flags": [],
         }
-        kyc = {
-            "provider": "Synthetic KYC simulator",
-            "pan_status": "pending",
-            "name_match_score": 1.0,
-            "pan_demo_id": data["pan"],
-            "cersai": "not applicable (unsecured)",
-        }
+        kyc = dict(
+            data.get("kyc")
+            or {
+                "status": "pending",
+                "pan_status": "pending",
+                "name_match": 0.0,
+                "name_match_score": 0.0,
+                "method": "Not completed",
+                "provider": "Simulated identity check",
+            }
+        )
+        kyc.setdefault("pan_demo_id", data["pan"])
+        kyc.setdefault("cersai", "not applicable (unsecured)")
+        if not existing_customer and kyc.get("method") == "Demo identity":
+            identity_text = "\n".join(
+                (
+                    "SYNTHETIC IDENTITY SHEET",
+                    f"Name: {data['name']}",
+                    f"PAN demo identifier: {data['pan']}",
+                    "Registry result: verified (simulated)",
+                    "SYNTHETIC SAMPLE, DEMO ONLY",
+                )
+            )
+            identity_folder = root / "data" / "uploads" / application_id / "kyc"
+            identity_folder.mkdir(parents=True, exist_ok=True)
+            identity_path = identity_folder / "identity_sheet.pdf"
+            identity_path.write_bytes(_pdf_bytes("Synthetic identity sheet", identity_text.splitlines()))
+            documents.append(
+                {
+                    "doc_type": "identity_sheet",
+                    "file_name": identity_path.name,
+                    "file_path": identity_path.relative_to(root).as_posix(),
+                    "text_content": identity_text,
+                }
+            )
         create_intake_application(
             applicant,
             application,
@@ -122,6 +152,10 @@ def seed_custom_cases(
             documents,
             store,
             application_id=application_id,
-            customer_id=f"CUST-CUSTOM-{number}",
+            customer_id=(
+                str(data["customer_id"])
+                if existing_customer
+                else f"CUST-CUSTOM-{number}"
+            ),
         )
     return len(cases)

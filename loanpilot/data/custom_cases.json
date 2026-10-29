@@ -1,0 +1,24 @@
+[
+  {
+    "application_id": "APP-CUSTOM-1",
+    "inputs": {
+      "name": "Greeshma Prabhu",
+      "dob": "1990-01-01",
+      "city": "Tellar post,Durga village,karkala taluk,Udupi district, Karnataka",
+      "pan": "DEMO398691CA",
+      "mobile": "9731530624",
+      "employer": "yes ",
+      "employment_type": "Salaried",
+      "job_months": 12,
+      "experience_months": 12,
+      "income": 50000.0,
+      "existing_emi": 0.0,
+      "amount": 200000.0,
+      "tenure": 36,
+      "purpose": "Travel",
+      "document_mode": "Generate synthetic documents from my entries",
+      "document_problem": false,
+      "problem_type": "Salary credits about 30% below the payslip"
+    }
+  }
+]

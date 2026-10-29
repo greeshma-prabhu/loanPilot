@@ -5,6 +5,11 @@ synthetic people, documents, and bureau/KYC responses. It is not a real bank
 system, credit decision, loan offer, or regulatory-compliance claim. AI can
 recommend and explain, but a human reviewer makes the decision.
 
+The workspace includes demo-grade sign-in. Credentials and demo access are
+configured through `.streamlit/secrets.toml` or the supported local environment
+variables. Generate password hashes with `python -m loanpilot.auth.make_hash`.
+Sign-in has no MFA or single sign-on and does not create persistent sessions.
+
 Demonstration with synthetic data. Not a real bank system or credit decision.
 
 ## Run locally

@@ -614,7 +614,13 @@ def _seed_rows(store: SQLiteStore, rng: random.Random) -> None:
         )
 
     store.execute_many(
-        "INSERT INTO cur_applications VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", app_rows
+        """
+        INSERT INTO cur_applications
+            (application_id, customer_id, requested_amount, tenure_months, purpose,
+             channel, submitted_at, stage, persona_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        app_rows,
     )
     store.execute_many(
         "INSERT INTO raw_bureau_responses VALUES (?, ?, ?)", bureau_rows

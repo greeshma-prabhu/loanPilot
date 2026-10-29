@@ -66,6 +66,35 @@ def test_credentials_accept_configured_username() -> None:
     assert app.session_state["auth"]["method"] == "credentials"
 
 
+def test_credential_sign_in_opens_authenticated_dashboard() -> None:
+    """Valid username/password submission reaches the product dashboard."""
+    user = {
+        "username": "greeshma",
+        "display_name": "Greeshma Prabhu",
+        "email": "analyst@example.test",
+        "role": "Credit Analyst",
+        "password_hash": make_password_hash(_TEST_PASSWORD),
+    }
+    script = (
+        "import streamlit as st\n"
+        "from loanpilot.pages import login\n"
+        f"login.configured_users = lambda: {[user]!r}\n"
+        "login.credential_configuration_error = lambda: None\n"
+        "login.demo_access_enabled = lambda: True\n"
+        "from app import main\n"
+        "main()\n"
+    )
+    app = AppTest.from_string(script).run()
+    app.text_input(key="login_username").set_value("greeshma")
+    app.text_input(key="login_password").set_value(_TEST_PASSWORD)
+    next(button for button in app.button if button.label == "Sign in").click().run()
+
+    assert not app.exception
+    assert app.session_state["auth"]["method"] == "credentials"
+    assert any(element.value == "Overview" for element in app.title)
+    assert any(link.label == "Applications" for link in app.get("page_link"))
+
+
 def test_wrong_password_uses_generic_error() -> None:
     """The login error never identifies whether the name or password was wrong."""
     app = _login_app([]).run()

@@ -86,6 +86,16 @@ def test_logged_out_app_does_not_expose_product_navigation() -> None:
     assert not app.get("page_link")
 
 
+def test_demo_sign_in_opens_authenticated_dashboard() -> None:
+    """Demo sign-in reruns the app into its authenticated Overview dashboard."""
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.button(key="login_demo_access").click().run()
+
+    assert not app.exception
+    assert any(element.value == "Overview" for element in app.title)
+    assert any(link.label == "Applications" for link in app.get("page_link"))
+
+
 def test_authenticated_app_can_rerun_without_reusing_page_objects() -> None:
     """Repeated entrypoint runs create fresh page objects for Streamlit navigation."""
     app = AppTest.from_file(str(APP_PATH))

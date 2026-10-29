@@ -102,6 +102,8 @@ def main() -> None:
         "Access": [LOGIN_PAGE],
     }
     navigation = st.navigation(navigation_pages, position="hidden")
+    if navigation.url_path == "login":
+        st.switch_page(operate_pages["overview"])
 
     store = SQLiteStore()
     create_schema(store)

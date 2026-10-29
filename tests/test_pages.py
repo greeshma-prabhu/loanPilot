@@ -70,12 +70,21 @@ def test_app_runs_without_exception() -> None:
     assert any(button.label == "Start demo with Priya Menon" for button in app.button)
 
 
-def test_know_more_opens_explanatory_navigation() -> None:
-    """The sidebar Know more action opens its explanatory-page dialog."""
+def test_know_more_expands_explanatory_navigation() -> None:
+    """The sidebar Know more expander contains all explanatory pages."""
     app = AppTest.from_file(str(APP_PATH)).run()
-    app.button(key="open_know_more").click().run()
     assert not app.exception
-    assert any("Explore how this demonstration" in item.value for item in app.caption)
+    assert any(item.label == "Know more" for item in app.expander)
+    page_labels = {item.label for item in app.get("page_link")}
+    assert all(
+        label in page_labels
+        for label in (
+            "Approach Story",
+            "Technical Architecture",
+            "Data Explorer",
+            "About & FAQ",
+        )
+    )
 
 
 def test_know_more_pages_are_registered_in_hidden_navigation() -> None:

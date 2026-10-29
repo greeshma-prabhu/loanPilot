@@ -8,19 +8,6 @@ from loanpilot.data.store import SQLiteStore
 from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION, OPERATE_PAGES
 
 
-@st.dialog("Know more")
-def _show_know_more() -> None:
-    """Offer explanatory pages in a lightweight navigation dialog."""
-    st.caption("Explore how this demonstration is designed and what it contains.")
-    for key, label in (
-        ("approach_story", "Approach Story"),
-        ("technical_architecture", "Technical Architecture"),
-        ("data_explorer", "Data Explorer"),
-        ("about_faq", "About & FAQ"),
-    ):
-        st.page_link(KNOW_MORE_PAGES[key], label=label, icon="↗")
-
-
 def main() -> None:
     """Configure navigation and render the selected page."""
     st.set_page_config(page_title=config.APP_NAME, page_icon="🏦", layout="wide")
@@ -42,8 +29,14 @@ def main() -> None:
         )
         for key in ("overview", "applications", "new_application", "ai_assessment", "human_review"):
             st.page_link(OPERATE_PAGES[key])
-        if st.button("Know more", key="open_know_more", type="secondary", width="stretch"):
-            _show_know_more()
+        with st.expander("Know more", expanded=False):
+            for key, label in (
+                ("approach_story", "Approach Story"),
+                ("technical_architecture", "Technical Architecture"),
+                ("data_explorer", "Data Explorer"),
+                ("about_faq", "About & FAQ"),
+            ):
+                st.page_link(KNOW_MORE_PAGES[key], label=label)
         bootstrap_notice = st.session_state.pop(
             "_loanpilot_bootstrap_notice", None
         )

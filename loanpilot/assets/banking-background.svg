@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="210" y1="62" x2="1430" y2="1044" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DDF1EF"/>
+      <stop offset=".54" stop-color="#F3F4EF"/>
+      <stop offset="1" stop-color="#F5E9D7"/>
+    </linearGradient>
+    <linearGradient id="building" x1="745" y1="344" x2="1430" y2="1028" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF"/>
+      <stop offset="1" stop-color="#DCEBE7"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="880" y1="512" x2="1390" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#74B9B0"/>
+      <stop offset="1" stop-color="#257C76"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0" cy="0" r="1" gradientTransform="matrix(0 240 -240 0 1190 285)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2D59B" stop-opacity=".85"/>
+      <stop offset="1" stop-color="#F2D59B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v1100H0z"/>
+  <circle cx="1190" cy="285" r="240" fill="url(#sun)"/>
+  <path d="M0 701c210-86 356-70 534 15s333 109 516 36c189-75 332-91 550-10v358H0V701Z" fill="#BDDCD5" fill-opacity=".72"/>
+  <path d="M0 812c226-75 372-33 553 37 200 77 363 65 560-20 174-75 325-70 487-13v284H0V812Z" fill="#9ECAC2" fill-opacity=".48"/>
+  <path d="M708 1030V520l351-185 383 185v510H708Z" fill="url(#building)" stroke="#497F79" stroke-opacity=".56" stroke-width="5"/>
+  <path d="m708 520 351-185 383 185H708Z" fill="#F9FCF9" stroke="#497F79" stroke-opacity=".56" stroke-width="5"/>
+  <path d="M827 480h464M855 526h408" stroke="#7DABA4" stroke-opacity=".68" stroke-width="6"/>
+  <path d="M786 1030V578h535v452" stroke="#477D77" stroke-opacity=".55" stroke-width="5"/>
+  <path d="M836 594h96v435h-96zM1009 594h96v435h-96zM1182 594h96v435h-96z" fill="url(#glass)" fill-opacity=".72" stroke="#39766F" stroke-opacity=".48" stroke-width="4"/>
+  <path d="M814 1029h482M756 1040h716" stroke="#39766F" stroke-opacity=".55" stroke-width="7"/>
+  <path d="M1058 344v-90m0 0 53 73m-53-73-53 73" stroke="#39766F" stroke-opacity=".55" stroke-width="5"/>
+  <path d="M0 936c191-49 352-47 501 6m-355 59c123-36 233-37 330-4" stroke="#5B9B92" stroke-opacity=".48" stroke-width="5" stroke-linecap="round"/>
+  <path d="M119 310h265m-215 52h166M215 258v155m54-155v155m54-155v155" stroke="#5B9B92" stroke-opacity=".25" stroke-width="5" stroke-linecap="round"/>
+</svg>

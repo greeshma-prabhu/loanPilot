@@ -29,6 +29,10 @@ class InvalidLLMJSON(ValueError):
     """Raised when the model response is not a JSON object."""
 
 
+class GeminiUnavailableError(RuntimeError):
+    """Raised when an on-demand Gemini operation cannot be completed."""
+
+
 def _api_key() -> str | None:
     """Read the Gemini key from the environment, then Streamlit secrets."""
     key = os.getenv("GEMINI_API_KEY")
@@ -60,12 +64,22 @@ def _recorded_payload(persona_key: str | None) -> dict[str, Any]:
         return {}
 
 
-def _generate_json(prompt: str, api_key: str) -> dict[str, Any]:
+def _generate_json(
+    prompt: str,
+    api_key: str,
+    *,
+    timeout_ms: int | None = None,
+) -> dict[str, Any]:
     """Call Gemini and require a JSON object response."""
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    options = (
+        {"http_options": types.HttpOptions(timeout=timeout_ms)}
+        if timeout_ms is not None
+        else {}
+    )
+    client = genai.Client(api_key=api_key, **options)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
@@ -81,6 +95,18 @@ def _generate_json(prompt: str, api_key: str) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise InvalidLLMJSON("Gemini response must be a JSON object")
     return result
+
+
+def generate_json_with_gemini(
+    prompt: str,
+    *,
+    timeout_ms: int = 20_000,
+) -> dict[str, Any]:
+    """Generate grounded JSON using the configured Gemini model and key."""
+    api_key = _api_key()
+    if not api_key:
+        raise GeminiUnavailableError("Gemini is not configured.")
+    return _generate_json(prompt, api_key, timeout_ms=timeout_ms)
 
 
 def extract_identity_holder_name(content: bytes, mime_type: str) -> dict[str, str] | None:

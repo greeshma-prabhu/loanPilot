@@ -17,7 +17,6 @@ from loanpilot.data.queries import (
     human_decision_is_override,
     list_intake_customers,
     list_applications,
-    overview_metrics,
     record_human_decision,
 )
 from loanpilot.data.schema import create_schema
@@ -546,58 +545,28 @@ def test_bureau_score_is_stable_and_responds_to_income_burden_and_tenure() -> No
     assert estimate_bureau_score(50000, 0, 10, 11, "DEMO-THIN") is None
 
 
-def test_overview_metrics_match_database_counts(seeded_store) -> None:
-    """Dashboard counters agree with independent direct table counts."""
-    metrics = overview_metrics(seeded_store)
-    pipeline = seeded_store.query(
-        """
-        SELECT COUNT(*) AS count FROM cur_applications
-        WHERE stage NOT IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents')
-        """
-    ).iloc[0]["count"]
-    review = seeded_store.query(
-        "SELECT COUNT(*) AS count FROM cur_applications WHERE stage = ?",
-        ("Human Review",),
-    ).iloc[0]["count"]
-    approvals = seeded_store.query(
-        "SELECT COUNT(*) AS count FROM cur_decisions WHERE ai_recommendation = ?",
-        ("Approve",),
-    ).iloc[0]["count"]
-    assert metrics["pipeline_count"] == pipeline
-    assert metrics["pending_review_count"] == review
-    assert metrics["approve_count"] == approvals
+def test_overview_analytics_match_persisted_application_records(seeded_store) -> None:
+    """Monthly chart periods and status totals match actual unique application rows."""
+    records = overview._portfolio_records(seeded_store)
+    assert records["application_id"].is_unique
+    years = sorted(records["year"].unique().tolist(), reverse=True)
+    assert years
+    for year in years:
+        monthly = overview._monthly_counts(records, int(year))
+        assert int(monthly["count"].sum()) == int((records["year"] == year).sum())
 
     app = _render_page("overview", seeded_store).run()
     assert not app.exception
     assert app.title[0].value == "Overview"
-    assert any("Start demo with Priya Menon" == button.label for button in app.button)
-    chart_titles = [item.value for item in app.markdown]
-    assert any("Open cases by stage" in title for title in chart_titles)
-    assert any("AI decision mix" in title for title in chart_titles)
-    assert any(item.label == "Risk-band distribution" for item in app.expander)
-    cases = overview._demo_custom_cases(seeded_store)
-    active = ~cases["stage"].isin(
-        {"Rejected", "Disbursed (simulated)", "Awaiting documents"}
-    )
-    closed = ~active
-    assert len(cases) == int(active.sum()) + int(closed.sum())
-
-
-def test_guided_demo_opens_priya_case(seeded_store, monkeypatch) -> None:
-    """The dashboard assesses peers but leaves Priya live for the presenter."""
-    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
-    app = _navigation_app(seeded_store, "overview").run()
-    app.button(key="start_guided_demo").click().run(timeout=30)
-    assert not app.exception
-    assert app.title[0].value == "Case workspace"
-    assert app.session_state["selected_application"] == "APP-PERSONA-1"
-    assert get_application("APP-PERSONA-1", seeded_store).iloc[0][
-        "ai_recommendation"
-    ] is None
-    for application_number in range(2, 7):
-        assert get_application(
-            f"APP-PERSONA-{application_number}", seeded_store
-        ).iloc[0]["ai_recommendation"] is not None
+    assert len(app.get("plotly_chart")) == 1
+    assert app.selectbox[0].label == "Application year"
+    assert [int(year) for year in app.selectbox[0].options] == years
+    headings = [item.value for item in app.subheader]
+    assert headings == [
+        "Loan Portfolio Analytics",
+        "Latest Updates",
+        "Needs Your Attention",
+    ]
 
 
 def test_shared_handoff_button_carries_case_to_human_review(monkeypatch) -> None:
@@ -621,7 +590,7 @@ def test_phase6_pages_render_with_empty_database(module: str, tmp_path) -> None:
     app = _render_page(module, store).run()
     assert not app.exception
     if module == "overview":
-        assert any(button.label == "Start demo with Priya Menon" for button in app.button)
+        assert any("Portfolio analytics will appear" in item.value for item in app.info)
     else:
         assert app.title[0].value == "New Application"
 

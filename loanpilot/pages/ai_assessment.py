@@ -22,7 +22,7 @@ from loanpilot.data.queries import (
     get_application,
     list_applications,
 )
-from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.document_library import search_library_documents
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import format_datetime, render_disclaimer, render_header
@@ -57,15 +57,6 @@ def _run_selected_assessment(application_id: str, store: SQLiteStore) -> None:
     result = run_assessment(application_id, store)
     st.session_state["assessment_result"] = result
     st.session_state["assessment_application_id"] = application_id
-
-
-def _load_demo_data(store: SQLiteStore) -> None:
-    """Generate the synthetic sample dataset in an empty store."""
-    counts = seed_demo_data(store, reset=True)
-    st.toast(
-        "Demo data loaded. "
-        + ", ".join(f"{table}: {count}" for table, count in counts.items())
-    )
 
 
 def _decode_trace_row(row: pd.Series) -> dict[str, Any]:
@@ -376,6 +367,38 @@ def _render_details(result: dict[str, Any]) -> None:
                 st.json(result.get("trace", []))
 
 
+def _render_library_references(
+    result: dict[str, Any],
+    store: SQLiteStore,
+) -> None:
+    """Show keyword-retrieved uploaded guidance without treating it as policy."""
+    application = get_application(str(result["application_id"]), store)
+    if application.empty:
+        return
+    purpose = str(application.iloc[0].get("purpose", ""))
+    clauses = result.get("policy", {}).get("clauses", [])
+    query = " ".join(
+        [purpose]
+        + [str(clause.get("rule_text", "")) for clause in clauses]
+    )
+    references = search_library_documents(query, store)
+    with st.expander("Document Library references", expanded=False):
+        st.caption(
+            "Keyword-matched excerpts from uploaded PDFs. These references are "
+            "informational only, separate from configured policy, and were not "
+            "used to calculate or change this assessment."
+        )
+        if not references:
+            st.info("No processed library documents matched this case.")
+            return
+        for reference in references:
+            st.write(str(reference["original_filename"]))
+            st.caption(
+                f"Uploaded {format_datetime(str(reference['uploaded_at']))}"
+            )
+            st.write(reference["snippet"])
+
+
 def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
     """Render the decision and key facts before optional technical details."""
     application_id = str(result["application_id"])
@@ -438,6 +461,7 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
                 args=(application_id,),
                 width="stretch",
             )
+    _render_library_references(result, store)
     _render_details(result)
 
 
@@ -451,14 +475,15 @@ def render(store: SQLiteStore | None = None) -> None:
         "A transparent five-step workflow: deterministic policy and calculations, with language support kept in its lane.",
         "OPERATE  /  ASSESSMENT PIPELINE",
     )
-    applications = list_applications(store=store)
+    applications = list_applications({"user_created_only": True}, store)
     if applications.empty:
-        st.info("No demo applications are loaded yet. Load the synthetic sample dataset to begin.")
-        st.button(
-            "Load demo data",
-            on_click=_load_demo_data,
-            args=(store,),
-            key="load_assessment_data",
+        from loanpilot.navigation import OPERATE_PAGES
+
+        st.info("No applications are available for assessment yet.")
+        st.page_link(
+            OPERATE_PAGES["new_application"],
+            label="Create an application",
+            icon=":material/add:",
         )
         return
 

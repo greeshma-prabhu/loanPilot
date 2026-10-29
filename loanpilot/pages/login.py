@@ -7,6 +7,7 @@ import streamlit as st
 from loanpilot.auth import configured_users, demo_access_enabled, verify_password
 from loanpilot.theme import render_login_styles
 
+
 def _show_forgot_password() -> None:
     """Explain the demo password recovery path."""
     st.toast("Contact your administrator (demo)")
@@ -98,11 +99,12 @@ def render() -> None:
         st.markdown(
             """
             <div class="lp-login-brand">
-              <span class="lp-ring-mark">L</span>
-              <span>LoanPilot <i>·</i> Aarambh Bank</span>
+              <span class="lp-login-brand-name">LoanPilot</span>
+              <span class="lp-login-brand-divider">·</span>
+              <span class="lp-login-bank-name">Aarambh Bank</span>
             </div>
             <h1 class="lp-login-title">Welcome back</h1>
-            <p class="lp-login-subtitle">Sign in</p>
+            <p class="lp-login-subtitle">Sign in to your intelligent lending workspace.</p>
             """,
             unsafe_allow_html=True,
         )
@@ -148,5 +150,6 @@ def render() -> None:
             key="login_demo_access",
             on_click=_sign_in_demo,
             disabled=not demo_access_enabled(),
+            type="secondary",
             width="stretch",
         )

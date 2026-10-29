@@ -231,9 +231,14 @@ def test_review_queue_prioritizes_declines_then_referrals(review_store) -> None:
     assert queue.iloc[2:5]["ai_recommendation"].tolist() == ["Refer", "Refer", "Refer"]
 
 
-@pytest.mark.parametrize("application_id", PERSONA_IDS)
-def test_human_review_page_renders_each_persona(review_store, application_id) -> None:
-    """The decision-first human review workspace renders every persona."""
+def test_human_review_page_renders_user_created_case(
+    review_store, create_user_case
+) -> None:
+    """The decision-first review workspace opens a user-created application."""
+    application_id = create_user_case(
+        review_store, "APP-NEW-REVIEW-PAGE", "Review Page Applicant"
+    )
+    run_assessment(application_id, review_store)
     script = (
         "import streamlit as st\n"
         "st.session_state['auth'] = {'name': 'Test Reviewer', 'role': 'Credit Analyst'}\n"

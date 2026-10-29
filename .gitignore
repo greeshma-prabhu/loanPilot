@@ -2,6 +2,7 @@
 __pycache__/
 data/*.db
 data/documents/
+data/document_library/
 data/uploads/
 data/sanctions/
 .streamlit/secrets.toml

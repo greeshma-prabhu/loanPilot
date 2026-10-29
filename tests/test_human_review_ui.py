@@ -7,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 
 from loanpilot.agent.orchestrator import run_assessment
 from loanpilot.data.queries import (
+    create_intake_application,
     get_application,
     get_audit_log,
     get_review_queue,
@@ -17,24 +18,82 @@ from loanpilot.data.store import SQLiteStore
 from loanpilot.pages import human_review
 
 _REASON = "Reviewed the evidence and documented the decision rationale."
+_FIRST_CASE = "APP-NEW-REVIEW-3"
+_SECOND_CASE = "APP-NEW-REVIEW-6"
 _ACTION_EXPECTATIONS = (
-    ("approve", "APP-PERSONA-3", "Approve", "Sanction"),
-    ("approve_with_conditions", "APP-PERSONA-6", "Approve with conditions", "Sanction"),
-    ("modify_terms", "APP-PERSONA-3", "Modify terms", "Sanction"),
-    ("refer_up", "APP-PERSONA-6", "Refer up", "Escalated"),
-    ("reject", "APP-PERSONA-3", "Reject", "Rejected"),
-    ("request_documents", "APP-PERSONA-6", "Request documents", "Awaiting documents"),
+    ("approve", _FIRST_CASE, "Approve", "Sanction"),
+    ("approve_with_conditions", _SECOND_CASE, "Approve with conditions", "Sanction"),
+    ("modify_terms", _FIRST_CASE, "Modify terms", "Sanction"),
+    ("refer_up", _SECOND_CASE, "Refer up", "Escalated"),
+    ("reject", _FIRST_CASE, "Reject", "Rejected"),
+    ("request_documents", _SECOND_CASE, "Request documents", "Awaiting documents"),
 )
 
 
 @pytest.fixture
 def assessed_pair(tmp_path, monkeypatch) -> SQLiteStore:
-    """Create isolated assessed Imran and Meera cases for reviewer interactions."""
+    """Create isolated assessed user-created cases for reviewer interactions."""
     monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
     store = SQLiteStore(tmp_path / "review-ui.db")
     seed_demo_data(store, reset=True)
-    for application_id in ("APP-PERSONA-3", "APP-PERSONA-6"):
+    for application_id, name in (
+        (_FIRST_CASE, "Review Applicant One"),
+        (_SECOND_CASE, "Review Applicant Two"),
+    ):
+        create_intake_application(
+            {
+                "name": name,
+                "dob": "1990-01-01",
+                "age": 36,
+                "city": "Pune",
+                "mobile": "9000000000",
+                "employer": "Review Test Employer",
+                "employment_type": "Salaried",
+                "current_tenure_months": 60,
+                "total_experience_months": 120,
+                "net_monthly_income": 100000,
+                "existing_emi": 0,
+                "pan_demo_id": f"{application_id[-1]}EST1234A",
+            },
+            {
+                "requested_amount": 200000,
+                "tenure_months": 36,
+                "purpose": "Education",
+                "submitted_at": datetime.now().isoformat(timespec="seconds"),
+            },
+            {
+                "provider": "Review test bureau",
+                "score": 800,
+                "thin_file": False,
+                "active_accounts": 1,
+                "enquiries_6m": 0,
+                "max_dpd_24m": 0,
+                "written_off": False,
+                "utilization_pct": 5,
+            },
+            {"status": "verified", "checks": []},
+            [
+                {
+                    "doc_type": doc_type,
+                    "file_name": f"{doc_type}.pdf",
+                    "file_path": str(tmp_path / f"{application_id}-{doc_type}.pdf"),
+                    "text_content": f"Verified test {doc_type} document.",
+                }
+                for doc_type in ("identity", "address", "income", "bank_statement")
+            ],
+            store,
+            application_id=application_id,
+        )
         run_assessment(application_id, store)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE cur_decisions SET ai_recommendation = ? WHERE application_id = ?",
+            ("Decline", _FIRST_CASE),
+        )
+        connection.execute(
+            "UPDATE cur_decisions SET ai_recommendation = ? WHERE application_id = ?",
+            ("Approve", _SECOND_CASE),
+        )
     return store
 
 
@@ -52,7 +111,7 @@ def _app(store: SQLiteStore) -> AppTest:
 def test_signed_in_user_is_the_read_only_reviewer(assessed_pair) -> None:
     """The signed-in identity is displayed rather than chosen from demo names."""
     app = _app(assessed_pair).run()
-    application_id = "APP-PERSONA-3"
+    application_id = _FIRST_CASE
     app.button(key=f"review_open_{application_id}").click().run()
     reviewer = app.text_input(key=f"reviewer_display_{application_id}")
     assert reviewer.value == "Test Reviewer"
@@ -127,18 +186,22 @@ def test_decline_reject_has_no_override_notice_but_decline_approval_does(
     """The CP-8.2 notice follows the selected code and reason length gates approval."""
     monkeypatch.setattr(human_review, "approve_and_sanction", _fake_sanction)
     app = _app(assessed_pair).run()
-    app.button(key="review_open_APP-PERSONA-3").click().run()
-    app.selectbox(key="review_action_APP-PERSONA-3").select("reject").run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("reject").run()
     assert not any("CP-8.2" in warning.value for warning in app.warning)
 
-    app.selectbox(key="review_action_APP-PERSONA-3").select("approve").run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("approve").run()
     assert any("CP-8.2" in warning.value for warning in app.warning)
-    app.text_area(key="decision_reason_APP-PERSONA-3").set_value("Too short").run()
-    assert app.button(key="submit_review_APP-PERSONA-3").disabled
-    app.text_area(key="decision_reason_APP-PERSONA-3").set_value(_REASON).run()
-    assert not app.button(key="submit_review_APP-PERSONA-3").disabled
-    app.button(key="submit_review_APP-PERSONA-3").click().run()
-    saved = get_application("APP-PERSONA-3", assessed_pair).iloc[0]
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value("Too short").run()
+    assert any("9 / 20 characters" in item.value for item in app.caption)
+    assert not any("Minimum written-reason length met." in item.value for item in app.success)
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
+    assert any(f"{len(_REASON)} / 20 characters" in item.value for item in app.caption)
+    assert any("Minimum written-reason length met." in item.value for item in app.success)
+    assert not app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
+    saved = get_application(_FIRST_CASE, assessed_pair).iloc[0]
     assert saved["human_decision"] == "Approve"
     assert saved["is_override"] == 1
 
@@ -146,38 +209,38 @@ def test_decline_reject_has_no_override_notice_but_decline_approval_does(
 def test_action_selection_survives_rerun_and_cases_do_not_share_form_state(assessed_pair) -> None:
     """Separate application keys prevent the action or reason from crossing cases."""
     app = _app(assessed_pair).run()
-    app.button(key="review_open_APP-PERSONA-3").click().run()
-    app.selectbox(key="review_action_APP-PERSONA-3").select("reject").run()
-    app.text_area(key="decision_reason_APP-PERSONA-3").set_value(_REASON).run()
-    app.selectbox(key="review_action_APP-PERSONA-3").select("refer_up").run()
-    assert app.session_state["review_action_APP-PERSONA-3"] == "refer_up"
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("reject").run()
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("refer_up").run()
+    assert app.session_state[f"review_action_{_FIRST_CASE}"] == "refer_up"
 
-    app.button(key="close_review_details_APP-PERSONA-3").click().run()
-    app.button(key="review_open_APP-PERSONA-6").click().run()
-    assert app.selectbox(key="review_action_APP-PERSONA-6").value == "reject"
-    assert app.text_area(key="decision_reason_APP-PERSONA-6").value == ""
+    app.button(key=f"close_review_details_{_FIRST_CASE}").click().run()
+    app.button(key=f"review_open_{_SECOND_CASE}").click().run()
+    assert app.selectbox(key=f"review_action_{_SECOND_CASE}").value == "approve"
+    assert app.text_area(key=f"decision_reason_{_SECOND_CASE}").value == ""
 
 
 def test_case_panel_is_inline_single_and_dismissible(assessed_pair) -> None:
     """Opening a case hides other applicants; X closes without saving."""
     app = _app(assessed_pair).run()
     assert app.title[0].value == "Review queue"
-    assert app.button(key="review_open_APP-PERSONA-3")
-    assert app.button(key="review_open_APP-PERSONA-6")
+    assert app.button(key=f"review_open_{_FIRST_CASE}")
+    assert app.button(key=f"review_open_{_SECOND_CASE}")
     assert not any(item.value == "Your decision" for item in app.subheader)
 
-    app.button(key="review_open_APP-PERSONA-3").click().run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
     assert any(item.value == "Your decision" for item in app.subheader)
-    assert app.session_state["review_open"] == "APP-PERSONA-3"
+    assert app.session_state["review_open"] == _FIRST_CASE
     visible_markdown = "\n".join(element.value for element in app.markdown)
-    assert "Imran Sheikh" in visible_markdown
-    assert "Meera Iyer" not in visible_markdown
-    assert not any(button.key == "review_open_APP-PERSONA-6" for button in app.button)
+    assert "Review Applicant One" in visible_markdown
+    assert "Review Applicant Two" not in visible_markdown
+    assert not any(button.key == f"review_open_{_SECOND_CASE}" for button in app.button)
 
-    app.button(key="close_review_details_APP-PERSONA-3").click().run()
+    app.button(key=f"close_review_details_{_FIRST_CASE}").click().run()
     assert not any(item.value == "Your decision" for item in app.subheader)
     assert app.session_state["review_open"] is None
-    assert pd.isna(get_application("APP-PERSONA-6", assessed_pair).iloc[0]["human_decision"])
+    assert pd.isna(get_application(_SECOND_CASE, assessed_pair).iloc[0]["human_decision"])
 
 
 def test_status_pills_are_the_only_queue_summary_controls(assessed_pair, monkeypatch) -> None:
@@ -191,15 +254,15 @@ def test_status_pills_are_the_only_queue_summary_controls(assessed_pair, monkeyp
     assert labels == ["Pending · 2", "Approved · 0", "Rejected · 0", "All · 2"]
     assert not app.metric
     assert not any(item.value == "Your decision" for item in app.subheader)
-    app.button(key="review_open_APP-PERSONA-3").click().run()
-    app.selectbox(key="review_action_APP-PERSONA-3").select("reject").run()
-    app.text_area(key="decision_reason_APP-PERSONA-3").set_value(_REASON).run()
-    app.button(key="submit_review_APP-PERSONA-3").click().run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("reject").run()
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
+    app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
 
     assert app.session_state["review_open"] is None
-    assert not any(button.key == "review_open_APP-PERSONA-3" for button in app.button)
+    assert not any(button.key == f"review_open_{_FIRST_CASE}" for button in app.button)
     app.button(key="review_filter_rejected").click().run()
-    assert app.button(key="review_open_APP-PERSONA-3").label == "View"
+    assert app.button(key=f"review_open_{_FIRST_CASE}").label == "View"
     assert any("Rejected" in element.value for element in app.markdown)
 
 

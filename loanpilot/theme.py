@@ -3,8 +3,6 @@
 import streamlit as st
 
 from loanpilot.badges import implementation_badge
-from loanpilot.data.seed import seed_demo_data
-from loanpilot.data.store import SQLiteStore
 
 _CSS = """
 <style>
@@ -35,6 +33,14 @@ _CSS = """
         min-width: 0 !important;
     }
     @media (max-width: 760px) {
+        [class*="st-key-overview_portfolio_layout"] [data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+            align-items: stretch !important;
+        }
+        [class*="st-key-overview_portfolio_layout"] [data-testid="stColumn"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+        }
         [data-testid="stCheckbox"] label,
         [data-testid="stRadio"] label,
         label[data-react-aria-pressable="true"] {
@@ -215,21 +221,30 @@ _CSS = """
         color: #68777d;
     }
     .lp-sidebar-brand {
+        position: relative;
         display: flex;
         flex-direction: column;
-        color: #2a2a2a;
+        overflow: hidden;
+        color: #155e59;
         font-size: 1.12rem;
         font-weight: 720;
         letter-spacing: -.01em;
         margin: .2rem 0 1.2rem;
-        padding: .8rem .75rem;
-        border: 1px solid #e1e7e9;
+        padding: .8rem .75rem .8rem .95rem;
+        border: 1px solid #b6d8d4;
         border-radius: 14px;
-        background: #ffffff;
-        box-shadow: 0 4px 14px rgba(20, 59, 60, .04);
+        background: #e9f4f3;
+        box-shadow: 0 5px 16px rgba(20, 59, 60, .08);
+    }
+    .lp-sidebar-brand:before {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, #168f87, #11766f);
+        content: "";
     }
     .lp-sidebar-brand span {
-        color: #68777d;
+        color: #456b69;
         font-size: .88rem;
         font-weight: 550;
         letter-spacing: 0;
@@ -611,6 +626,9 @@ _CSS = """
         flex-direction: column;
         min-height: calc(100vh - 7rem);
     }
+    [data-testid="stSidebarUserContent"] {
+        padding-bottom: 1rem !important;
+    }
     [data-testid="stSidebar"] .st-key-sidebar-nav {
         flex: 0 0 auto;
     }
@@ -623,6 +641,16 @@ _CSS = """
         border-radius: 14px;
         background: #e9f4f3;
         box-shadow: 0 5px 16px rgba(20, 59, 60, .08);
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] {
+        margin-bottom: .5rem;
+        border-color: #c9e2df;
+        border-radius: 10px;
+        background: #ffffff;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] summary {
+        color: #173b39;
+        font-weight: 650;
     }
     [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button {
         width: 100%;
@@ -663,12 +691,16 @@ def render_disclaimer() -> None:
 
 
 def render_login_styles() -> None:
-    """Apply a centered, neutral login-card theme."""
+    """Apply the focused, responsive LoanPilot sign-in theme."""
     st.markdown(
         """
         <style>
         [data-testid="stSidebar"], [data-testid="stHeader"],
         [data-testid="stToolbar"], footer { display:none !important; }
+        html, body, [data-testid="stAppViewContainer"] {
+            min-width:0 !important;
+            overflow-x:hidden !important;
+        }
         [data-testid="stMain"] {
             align-items:center !important;
             justify-content:center !important;
@@ -680,123 +712,161 @@ def render_login_styles() -> None:
             display:flex !important;
             align-items:center !important;
             justify-content:center !important;
-            padding:20px !important;
+            padding:32px 20px !important;
             box-sizing:border-box !important;
         }
-        .stApp { background:#f2f4f6 !important; color:#202a35 !important; }
+        .stApp {
+            color:#142d3b !important;
+            background:
+                radial-gradient(ellipse at 12% 8%, rgba(201,235,230,.38), transparent 40%),
+                radial-gradient(ellipse at 92% 92%, rgba(221,240,237,.45), transparent 38%),
+                linear-gradient(145deg,#f8fbfb 0%,#f2f8f7 52%,#fbfcfc 100%) !important;
+        }
         .st-key-login-card {
             box-sizing:border-box;
-            width:min(100%, 440px);
+            width:min(100%, 460px);
             margin:auto !important;
-            padding:38px 40px 32px;
-            border:1px solid #dfe3e8;
-            border-radius:22px;
+            padding:42px 42px 36px;
+            border:1px solid #e1ecea;
+            border-radius:20px;
             background:#fff;
-            box-shadow:0 18px 50px rgba(25,38,53,.12);
-            gap:.45rem !important;
+            box-shadow:0 20px 52px rgba(22,57,65,.09), 0 2px 8px rgba(22,57,65,.035);
+            gap:.55rem !important;
         }
         .lp-login-brand {
             display:flex;
             align-items:center;
             justify-content:center;
             gap:12px;
-            margin-bottom:25px;
-            color:#202a35;
-            font-size:.95rem;
-            font-weight:720;
+            margin-bottom:30px;
+            color:#153447;
+            font-size:1.04rem;
+            font-weight:750;
+            letter-spacing:-.02em;
         }
-        .lp-ring-mark {
-            display:inline-flex;
-            width:36px;
-            height:36px;
-            align-items:center;
-            justify-content:center;
-            border:2px solid #344256;
-            border-radius:50%;
-            color:#344256;
-            font-size:.95rem;
+        .lp-login-brand-name {
+            color:#12374a;
+            font-size:1.16rem;
             font-weight:780;
+        }
+        .lp-login-brand-divider {
+            width:1px;
+            height:22px;
+            background:#c9d9d8;
+            color:transparent;
+        }
+        .lp-login-bank-name {
+            color:#42616b;
+            font-size:.88rem;
+            font-weight:650;
+            letter-spacing:.015em;
         }
         .lp-login-title {
             margin:0;
-            color:#202a35;
+            color:#142d3b;
             text-align:center;
-            font-size:2rem;
-            letter-spacing:-.035em;
+            font-size:2.05rem;
+            font-weight:740;
+            letter-spacing:-.045em;
         }
         .lp-login-subtitle {
-            margin:4px 0 20px;
-            color:#536273;
+            margin:5px 0 24px;
+            color:#536b75;
             text-align:center;
+            font-size:.97rem;
+            line-height:1.5;
         }
         .st-key-login-card [data-testid="stForm"] {
             border:0 !important;
             padding:0 !important;
         }
         .st-key-login-card [data-testid="stTextInput"] label {
-            color:#263443 !important;
-            font-weight:630;
+            color:#203b49 !important;
+            font-weight:640;
         }
         .st-key-login-card [data-testid="stTextInput"] input {
-            min-height:46px;
-            padding-inline:15px;
-            border:1px solid #8a96a5 !important;
-            border-radius:12px !important;
+            min-height:49px;
+            padding-inline:14px;
+            border:1px solid #cbd9dc !important;
+            border-radius:11px !important;
             background:#fff !important;
-            color:#202a35 !important;
+            color:#142d3b !important;
+            transition:border-color .15s ease, box-shadow .15s ease;
         }
         .st-key-login-card [data-testid="stTextInput"] input:focus {
-            outline:3px solid #7789a2 !important;
-            outline-offset:2px;
+            border-color:#16877f !important;
+            outline:3px solid rgba(22,135,127,.17) !important;
+            outline-offset:1px;
         }
         .st-key-login-card [data-testid="stBaseButton-primary"] {
-            min-height:48px;
-            border:0 !important;
-            border-radius:12px !important;
-            background:#27364a !important;
+            min-height:49px;
+            border:1px solid #08766f !important;
+            border-radius:11px !important;
+            background:linear-gradient(115deg,#148e85,#08776f) !important;
             color:#fff !important;
-            box-shadow:none !important;
+            box-shadow:0 5px 12px rgba(8,119,111,.18) !important;
+            font-weight:680;
+            transition:filter .15s ease, box-shadow .15s ease;
         }
         .st-key-login-card [data-testid="stBaseButton-primary"] * {
             color:#fff !important;
         }
+        .st-key-login-card [data-testid="stBaseButton-primary"]:hover {
+            border-color:#075e59 !important;
+            filter:brightness(.94);
+            box-shadow:0 7px 16px rgba(8,119,111,.23) !important;
+        }
         .st-key-login-card [data-testid="stBaseButton-secondary"] {
-            min-height:48px;
-            border:1px solid #667386 !important;
-            border-radius:12px !important;
-            background:#fff !important;
-            color:#27364a !important;
+            min-height:46px;
+            border:1px solid #b9d7d3 !important;
+            border-radius:11px !important;
+            background:#f6fbfa !important;
+            color:#17645e !important;
+            box-shadow:none !important;
+            font-weight:620;
         }
         .st-key-login-card [data-testid="stBaseButton-secondary"] * {
-            color:#27364a !important;
+            color:#17645e !important;
+        }
+        .st-key-login-card [data-testid="stBaseButton-secondary"]:hover {
+            border-color:#83b9b2 !important;
+            background:#edf7f5 !important;
         }
         .st-key-login-card [data-testid="stBaseButton-tertiary"] {
-            min-height:28px !important;
-            padding-block:0 !important;
-            color:#344256 !important;
-            text-decoration:underline;
+            min-height:32px !important;
+            padding:0 !important;
+            color:#17645e !important;
+            font-weight:600;
         }
         .st-key-login-card button:focus-visible {
-            outline:3px solid #53677f !important;
+            outline:3px solid #347f79 !important;
             outline-offset:3px;
         }
         .lp-login-divider {
             display:flex;
             align-items:center;
             gap:12px;
-            margin:2px 0 7px;
-            color:#596777;
+            margin:7px 0 5px;
+            color:#71858b;
             font-size:.85rem;
         }
         .lp-login-divider:before, .lp-login-divider:after {
             content:"";
             flex:1;
             height:1px;
-            background:#dce1e7;
+            background:#e2ecea;
         }
         @media(max-width:600px) {
-            [data-testid="stMainBlockContainer"] { padding:14px !important; }
-            .st-key-login-card { padding:30px 23px 26px; border-radius:18px; }
+            [data-testid="stMainBlockContainer"] {
+                min-height:100vh !important;
+                padding:20px 14px !important;
+            }
+            .st-key-login-card {
+                padding:32px 24px 27px;
+                border-radius:17px;
+            }
+            .lp-login-brand { margin-bottom:25px; }
+            .lp-login-title { font-size:1.85rem; }
         }
         </style>
         """,
@@ -806,13 +876,14 @@ def render_login_styles() -> None:
 
 def render_header(
     title: str,
-    purpose: str,
+    purpose: str = "",
     eyebrow: str = "AARAMBH BANK  /  LOANPILOT",
 ) -> None:
     """Render a branded section label, page title, and one-line purpose."""
     st.markdown(f'<div class="lp-eyebrow">{eyebrow}</div>', unsafe_allow_html=True)
     st.title(title)
-    st.markdown(f'<div class="lp-subtitle">{purpose}</div>', unsafe_allow_html=True)
+    if purpose:
+        st.markdown(f'<div class="lp-subtitle">{purpose}</div>', unsafe_allow_html=True)
 
 
 def format_datetime(value: object) -> str:
@@ -855,15 +926,3 @@ def render_placeholder(title: str, purpose: str, phase: int) -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"Built in phase {phase}")
-    store = SQLiteStore()
-    if store.table_counts().get("cur_customers", 0) == 0:
-        st.info("No demo data is loaded yet. Load the synthetic sample dataset to begin.")
-        if st.button("Load demo data", key="load_demo_data"):
-            _reset_demo_data(store)
-
-
-def _reset_demo_data(store: SQLiteStore) -> None:
-    """Regenerate the synthetic dataset and report each table's row count."""
-    counts = seed_demo_data(store, reset=True)
-    count_text = ", ".join(f"{table}: {count}" for table, count in counts.items())
-    st.toast(f"Demo data ready. {count_text}")

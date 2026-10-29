@@ -1,80 +1,207 @@
-"""Command-centre overview for current demo and custom applications."""
+"""Portfolio analytics and recent document updates for the lending workspace."""
+
+import calendar
+from html import escape
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from loanpilot import config
-from loanpilot.agent.orchestrator import run_assessment
-from loanpilot.data.custom_cases import remove_custom_cases
-from loanpilot.data.queries import (
-    list_applications,
-    overview_attention_cases,
-    overview_cases,
-    overview_historical_metrics,
+from loanpilot.data.document_library import (
+    format_document_upload_time,
+    list_library_documents,
 )
-from loanpilot.data.seed import seed_demo_data
+from loanpilot.data.queries import overview_attention_cases
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.ledger import ledger_counts, ledger_frame
-from loanpilot.theme import format_datetime, render_disclaimer, render_header
+from loanpilot.theme import render_disclaimer, render_header
 
-_CLOSED_STAGES = {"Rejected", "Disbursed (simulated)", "Awaiting documents"}
-_STORIES = {
-    "PERSONA-1": "Consistent income and documents; strong bureau profile.",
-    "PERSONA-2": "Borderline FOIR with one older late payment.",
-    "PERSONA-3": "Monthly obligations exceed the illustrative limit.",
-    "PERSONA-4": "Payslip, employer and salary-credit evidence differ.",
-    "PERSONA-5": "Thin bureau file; a capped amount may be considered.",
-    "PERSONA-6": "Short current-job tenure despite long work history.",
+_STATUSES = ("Approved", "Rejected", "Pending")
+_STATUS_COLORS = {
+    "Approved": "#138b83",
+    "Rejected": "#bd6964",
+    "Pending": "#d99a32",
 }
+_APPROVED_STAGES = {"Approved", "Sanction", "Disbursed (simulated)"}
+_APPROVAL_DECISIONS = {"Approve", "Approve with conditions", "Modify terms"}
 
 
-def _demo_custom_cases(store: SQLiteStore) -> pd.DataFrame:
-    """Return only the six named personas and custom intake records."""
-    cases = overview_cases(store)
-    if cases.empty:
-        return cases
-    cases["case_type"] = cases.apply(
-        lambda row: "Custom case" if str(row["application_id"]).startswith("APP-CUSTOM-") else "Persona",
-        axis=1,
+def _portfolio_records(store: SQLiteStore) -> pd.DataFrame:
+    """Fetch one persisted row per application with its current workflow stage."""
+    records = store.query(
+        """
+        SELECT a.application_id, a.submitted_at, a.stage, d.human_decision
+        FROM cur_applications a
+        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE a.persona_key IS NULL
+          AND a.application_id NOT LIKE 'APP-HIST-%'
+          AND a.application_id NOT LIKE 'APP-CUSTOM-%'
+        ORDER BY a.application_id
+        """
     )
-    return cases
+    if records.empty:
+        return pd.DataFrame(
+            columns=[
+                "application_id",
+                "submitted_at",
+                "stage",
+                "human_decision",
+                "date",
+                "year",
+                "month",
+                "status",
+            ]
+        )
+
+    records = records.drop_duplicates("application_id").copy()
+    # Use the calendar date persisted at intake; decision dates do not move a
+    # case into another month when the current status changes.
+    records["date"] = pd.to_datetime(
+        records["submitted_at"].astype(str).str.slice(0, 10),
+        format="%Y-%m-%d",
+        errors="coerce",
+    )
+    records = records.loc[records["date"].notna()].copy()
+    records["year"] = records["date"].dt.year.astype(int)
+    records["month"] = records["date"].dt.month.astype(int)
+
+    # Portfolio periods are application-submission cohorts; each cohort reflects
+    # the current persisted stage, so later decisions do not shift its month.
+    stages = records["stage"].fillna("").astype(str)
+    decisions = records["human_decision"].fillna("").astype(str)
+    records["status"] = "Pending"
+    approved = stages.isin({"Approved", "Disbursed (simulated)"}) | (
+        stages.eq("Sanction") & decisions.isin(_APPROVAL_DECISIONS)
+    )
+    records.loc[approved, "status"] = "Approved"
+    records.loc[stages.eq("Rejected"), "status"] = "Rejected"
+    return records
 
 
-def _prepare_demo(store: SQLiteStore) -> tuple[int, int]:
-    """Assess missing persona/custom cases idempotently while reserving Priya."""
-    counts = store.table_counts()
-    if not counts.get("cur_applications", 0):
-        seed_demo_data(store)
-    cases = _demo_custom_cases(store)
-    assessed = 0
-    skipped = 0
-    for _, row in cases.iterrows():
-        if row["applicant"] == "Priya Menon":
-            skipped += 1
-            continue
-        if pd.notna(row["ai_recommendation"]) and str(row["ai_recommendation"]).strip():
-            skipped += 1
-            continue
-        run_assessment(str(row["application_id"]), store)
-        assessed += 1
-    return assessed, skipped
+def _monthly_counts(records: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Return twelve real calendar periods with current-status counts."""
+    months = pd.DataFrame(
+        [
+            {"month": month, "status": status, "count": 0}
+            for month in range(1, 13)
+            for status in _STATUSES
+        ]
+    )
+    if records.empty:
+        return months
+    actual = (
+        records.loc[records["year"] == year]
+        .groupby(["month", "status"], as_index=False)["application_id"]
+        .nunique()
+        .rename(columns={"application_id": "count"})
+    )
+    counts = months.drop(columns="count").merge(
+        actual,
+        on=["month", "status"],
+        how="left",
+    )
+    counts["count"] = counts["count"].fillna(0).astype(int)
+    counts["period"] = counts["month"].map(lambda month: calendar.month_abbr[month])
+    return counts
 
 
-def _start_demo(store: SQLiteStore) -> None:
-    """Assess missing demo cases except Priya, then open her case."""
-    from loanpilot.navigation import OPERATE_PAGES
-
-    _prepare_demo(store)
-    cases = _demo_custom_cases(store)
-    priya = cases.loc[cases["applicant"] == "Priya Menon"]
-    if priya.empty:
-        st.session_state["overview_notice"] = "Priya Menon is not present in the demo data."
+def _render_portfolio_analytics(store: SQLiteStore) -> None:
+    """Render the monthly status chart and the selected-year status summary."""
+    st.subheader("Loan Portfolio Analytics")
+    records = _portfolio_records(store)
+    if records.empty:
+        st.info("Portfolio analytics will appear when dated loan applications are available.")
         return
-    application_id = str(priya.iloc[0]["application_id"])
-    st.session_state["selected_application"] = application_id
-    st.switch_page(OPERATE_PAGES["applications"])
+
+    years = sorted(records["year"].unique().tolist(), reverse=True)
+    selected_year = st.selectbox(
+        "Application year",
+        years,
+        format_func=str,
+        key="overview_portfolio_year",
+    )
+    monthly = _monthly_counts(records, int(selected_year))
+    monthly["period"] = pd.Categorical(
+        monthly["period"],
+        categories=[calendar.month_abbr[month] for month in range(1, 13)],
+        ordered=True,
+    )
+    with st.container(key="overview_portfolio_layout"):
+        chart_column, summary_column = st.columns([3, 1])
+        with chart_column:
+            chart = px.bar(
+                monthly,
+                x="period",
+                y="count",
+                color="status",
+                custom_data=["period", "status", "count"],
+                category_orders={
+                    "period": [calendar.month_abbr[month] for month in range(1, 13)],
+                    "status": list(_STATUSES),
+                },
+                color_discrete_map=_STATUS_COLORS,
+                labels={"period": "Application month", "count": "Applications", "status": ""},
+            )
+            chart.update_traces(
+                hovertemplate="%{x}<br>%{customdata[1]}: %{customdata[2]}<extra></extra>"
+            )
+            chart.update_layout(
+                barmode="stack",
+                showlegend=False,
+                yaxis_title="Applications",
+                xaxis_title="",
+                margin={"l": 8, "r": 8, "t": 12, "b": 8},
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+            )
+            chart.update_yaxes(rangemode="tozero", dtick=1)
+            st.plotly_chart(
+                chart,
+                width="stretch",
+                key="overview_portfolio_monthly",
+            )
+        with summary_column:
+            st.markdown(f"#### Status summary · {selected_year}")
+            totals = monthly.groupby("status", observed=False)["count"].sum()
+            for status in _STATUSES:
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                    f'gap:.5rem;padding:.7rem 0;border-bottom:1px solid #e1e7e9">'
+                    f'<span><span style="color:{_STATUS_COLORS[status]}">●</span> {status}</span>'
+                    f'<strong>{int(totals.get(status, 0))}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+            st.caption(f"{int(monthly['count'].sum())} applications in this year")
+
+
+def _render_latest_updates(store: SQLiteStore) -> None:
+    """Display persisted document summaries, newest uploaded source first."""
+    st.subheader("Latest Updates")
+    documents = list_library_documents(store)
+    updates = [
+        document
+        for document in documents
+        if str(document.get("summary_status", "Not requested")) != "Not requested"
+    ]
+    if not updates:
+        st.info("Document summaries will appear here after a PDF is uploaded.")
+        return
+
+    for update in updates:
+        status = str(update.get("summary_status", "Not requested"))
+        with st.container(border=True):
+            if status == "Completed":
+                headline = escape(str(update.get("summary_headline", "")))
+                st.markdown(f"**{headline}**")
+                st.text(str(update.get("summary_text", "")))
+            else:
+                status_label = "Processing" if status == "Processing" else "Failed"
+                st.caption(status_label)
+                if status == "Failed":
+                    st.write(
+                        str(update.get("summary_error") or "A document summary is unavailable.")
+                    )
+            st.caption(format_document_upload_time(update.get("uploaded_at")))
 
 
 def _open_case(application_id: str) -> None:
@@ -85,171 +212,8 @@ def _open_case(application_id: str) -> None:
     st.switch_page(OPERATE_PAGES["applications"])
 
 
-def _reset_demo(store: SQLiteStore) -> None:
-    """Rebuild seeded personas, historical data and permanent custom cases."""
-    counts = seed_demo_data(store, reset=True)
-    st.session_state.pop("selected_application", None)
-    st.toast(f"Demo data reset. {counts.get('cur_applications', 0)} cases restored.")
-
-
-def _remove_custom_and_reset(store: SQLiteStore) -> None:
-    """Delete permanent custom definitions only after explicit confirmation."""
-    if not st.session_state.get("confirm_remove_custom_cases"):
-        st.session_state["custom_case_notice"] = "Confirm removal before deleting permanent custom cases."
-        return
-    remove_custom_cases()
-    _reset_demo(store)
-    st.session_state["custom_case_notice"] = "Permanent custom cases were removed."
-
-
-def _render_case_table(cases: pd.DataFrame) -> None:
-    """Display every demo/custom case with its current human-readable state."""
-    rows = []
-    for _, case in cases.iterrows():
-        story = (
-            "Permanent synthetic intake case."
-            if case["case_type"] == "Custom case"
-            else _STORIES.get(case["persona_key"], "Synthetic persona application.")
-        )
-        rows.append(
-            {
-                "Applicant": case["applicant"],
-                "Story": story,
-                "Stage": case["stage"],
-                "AI recommendation": (
-                    case["ai_recommendation"]
-                    if pd.notna(case["ai_recommendation"])
-                    else "—"
-                ),
-                "Human decision": (
-                    case["human_decision"]
-                    if pd.notna(case["human_decision"])
-                    else "—"
-                ),
-                "Override": (
-                    "Yes" if pd.notna(case["is_override"]) and bool(case["is_override"])
-                    else "No" if pd.notna(case["human_decision"])
-                    else "—"
-                ),
-                "Case type": case["case_type"],
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-
-
-def _render_charts(cases: pd.DataFrame, store: SQLiteStore) -> None:
-    """Render the two current-case charts and tuck risk distribution away."""
-    if cases.empty:
-        st.info("Case charts will appear when demo or custom cases are available.")
-        return
-    open_cases = cases.loc[~cases["stage"].isin(_CLOSED_STAGES)]
-    left, right = st.columns(2)
-    with left:
-        st.markdown("#### Open cases by stage")
-        counts = open_cases.groupby("stage", dropna=False).size().rename("Cases").reset_index()
-        if counts.empty:
-            st.info("There are no open cases.")
-        else:
-            st.plotly_chart(
-                px.bar(counts, x="stage", y="Cases", labels={"stage": "Stage"}),
-                width="stretch",
-                key="overview_open_stages",
-            )
-    with right:
-        st.markdown("#### AI decision mix")
-        decision_counts = (
-            cases.loc[cases["ai_recommendation"].notna()]
-            .groupby("ai_recommendation")
-            .size()
-            .rename("Cases")
-            .reset_index()
-        )
-        if decision_counts.empty:
-            st.info("AI recommendations appear after assessment.")
-        else:
-            st.plotly_chart(
-                px.bar(
-                    decision_counts,
-                    x="ai_recommendation",
-                    y="Cases",
-                    color="ai_recommendation",
-                    color_discrete_map={
-                        "Approve": "#23866f",
-                        "Refer": "#d69a2d",
-                        "Decline": "#b95c52",
-                    },
-                    labels={"ai_recommendation": "AI recommendation"},
-                ),
-                width="stretch",
-                key="overview_decision_mix",
-            )
-    with st.expander("Risk-band distribution"):
-        risk = list_applications(store=store)
-        risk = risk.loc[
-            risk["persona_key"].notna()
-            | risk["application_id"].astype(str).str.startswith("APP-CUSTOM-")
-        ]
-        if risk.empty or risk["risk_band"].dropna().empty:
-            st.info("Risk bands appear after assessment.")
-        else:
-            risk_counts = risk.groupby("risk_band").size().rename("Cases").reset_index()
-            st.plotly_chart(
-                px.bar(risk_counts, x="risk_band", y="Cases", color="risk_band"),
-                width="stretch",
-                key="overview_risk_distribution",
-            )
-
-
-def _render_closed_summary(cases: pd.DataFrame) -> None:
-    """Show closed outcomes, agreement counts, and rejected-case context."""
-    closed = cases.loc[cases["stage"].isin(_CLOSED_STAGES)]
-    agreed = int(
-        (
-            cases["human_decision"].notna()
-            & ~cases["is_override"].fillna(0).astype(bool)
-        ).sum()
-    )
-    overridden = int(cases["is_override"].fillna(0).astype(bool).sum())
-    counts = (
-        ("Approved · awaiting payout", int((cases["stage"] == "Sanction").sum())),
-        ("Disbursed", int((cases["stage"] == "Disbursed (simulated)").sum())),
-        ("Rejected", int((cases["stage"] == "Rejected").sum())),
-        ("Escalated", int((cases["stage"] == "Escalated").sum())),
-        ("Awaiting documents", int((cases["stage"] == "Awaiting documents").sum())),
-        ("AI / human agreed", agreed),
-        ("Overridden", overridden),
-    )
-    st.subheader("Closed cases")
-    columns = st.columns(4)
-    for column, (label, value) in zip(columns, counts[:4], strict=True):
-        column.metric(label, value)
-    columns = st.columns(3)
-    for column, (label, value) in zip(columns, counts[4:], strict=True):
-        column.metric(label, value)
-    rejected = closed.loc[closed["stage"] == "Rejected"]
-    with st.expander(f"Rejected case details ({len(rejected)})"):
-        if rejected.empty:
-            st.caption("No rejected cases.")
-        else:
-            st.dataframe(
-                rejected[["applicant", "decided_by", "human_reason", "decided_at"]]
-                .rename(
-                    columns={
-                        "applicant": "Applicant",
-                        "decided_by": "Reviewer",
-                        "human_reason": "Reason",
-                        "decided_at": "Decision time",
-                    }
-                )
-                .assign(**{"Decision time": lambda frame: frame["Decision time"].map(format_datetime)}),
-                width="stretch",
-                hide_index=True,
-            )
-
-
 def _render_attention(store: SQLiteStore) -> None:
-    """Show cases awaiting human review with direct case-open actions."""
-    st.subheader("Needs your attention")
+    """Show high-attention cases with direct links to their application records."""
     cases = overview_attention_cases(store)
     if cases.empty:
         st.info("No cases are currently awaiting human review.")
@@ -268,100 +232,17 @@ def _render_attention(store: SQLiteStore) -> None:
         )
 
 
-def _render_historical(store: SQLiteStore) -> None:
-    """Keep the 60 historical synthetic outcomes separate from pipeline totals."""
-    historical = overview_historical_metrics(store)
-    with st.container(border=True):
-        st.subheader("Historical portfolio · synthetic past cases")
-        st.caption("Historical cases are shown separately and are not part of the current pipeline.")
-        columns = st.columns(5)
-        for column, (label, value) in zip(
-            columns,
-            (
-                ("Cases", historical["case_count"]),
-                ("Approved", historical["approved_count"]),
-                ("Declined", historical["declined_count"]),
-                ("Referred", historical["referred_count"]),
-                ("Average processing", f"{float(historical['average_processing_days']):.1f} days"),
-            ),
-            strict=True,
-        ):
-            column.metric(label, value)
-
-
 def render(store: SQLiteStore | None = None) -> None:
-    """Render the single Overview command centre."""
+    """Render the focused portfolio command centre."""
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
-    render_header("Overview", "One command centre for the synthetic loan demo.", "OPERATE  /  COMMAND CENTRE")
-    notice = st.session_state.pop("overview_notice", None)
-    if notice:
-        st.warning(notice)
-    st.button(
-        "Start demo with Priya Menon",
-        type="primary",
-        width="stretch",
-        key="start_guided_demo",
-        on_click=_start_demo,
-        args=(store,),
+    render_header(
+        "Overview",
+        "Loan portfolio performance and lending intelligence.",
+        "OPERATE  /  COMMAND CENTRE",
     )
-
-    cases = _demo_custom_cases(store)
-    total = len(cases)
-    closed = int(cases["stage"].isin(_CLOSED_STAGES).sum()) if total else 0
-    open_count = total - closed
-    waiting = int((cases["stage"] == "Human Review").sum()) if total else 0
-    columns = st.columns(4)
-    for column, (label, value) in zip(
-        columns,
-        (
-            ("Total cases", total),
-            ("Open", open_count),
-            ("Closed", closed),
-            ("Waiting for human review", waiting),
-        ),
-        strict=True,
-    ):
-        column.metric(label, value, help="Six synthetic personas plus custom cases; historical cases excluded.")
-
-    st.subheader("Where every case stands")
-    if cases.empty:
-        st.info("No demo cases are loaded yet. Start demo to load the synthetic personas.")
-    else:
-        _render_case_table(cases)
-        ids = cases["application_id"].astype(str).tolist()
-        names = dict(zip(ids, cases["applicant"].astype(str), strict=True))
-        st.selectbox("Open a case", ids, format_func=lambda value: names[value], key="overview_case")
-        st.button(
-            "Open case",
-            on_click=_open_case,
-            args=(st.session_state.get("overview_case", ids[0]),),
-            key="overview_open_selected",
-        )
-
-    _render_charts(cases, store)
-    _render_closed_summary(cases)
+    _render_portfolio_analytics(store)
+    _render_latest_updates(store)
+    st.subheader("Needs Your Attention")
     _render_attention(store)
-    _render_historical(store)
-    with st.expander("Implementation status"):
-        ledger_counts(store)
-        st.dataframe(ledger_frame(store), width="stretch", hide_index=True)
-    with st.expander("Presenter controls"):
-        st.button(
-            "Reset demo data",
-            key="overview_reset_demo",
-            on_click=_reset_demo,
-            args=(store,),
-        )
-        st.caption("Remove permanent custom cases from the saved list and reset the database.")
-        st.checkbox("Confirm removal of all custom cases", key="confirm_remove_custom_cases")
-        st.button(
-            "Remove all custom cases",
-            key="remove_custom_cases",
-            on_click=_remove_custom_and_reset,
-            args=(store,),
-        )
-        custom_notice = st.session_state.pop("custom_case_notice", None)
-        if custom_notice:
-            st.info(custom_notice)

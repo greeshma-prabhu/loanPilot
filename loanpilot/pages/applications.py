@@ -43,30 +43,9 @@ from loanpilot.data.queries import (
     clear_llm_cache,
     append_audit_event,
 )
-from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import format_datetime, render_disclaimer, render_header
-
-_PERSONA_STORIES = {
-    "PERSONA-1": "Clean approve: consistent income and documents, strong bureau profile.",
-    "PERSONA-2": "Borderline FOIR: within the refer band with one older 30-day late payment.",
-    "PERSONA-3": "FOIR breach: obligations exceed the illustrative policy threshold.",
-    "PERSONA-4": "Document mismatch: payslip arithmetic, employer, and salary credits differ.",
-    "PERSONA-5": "Thin file: no bureau score; illustrative cap and referral apply.",
-    "PERSONA-6": "Override candidate: short current tenure despite a long prior work history.",
-}
-
-_PERSONA_SHORT_NAMES = {
-    "PERSONA-1": "Priya Menon",
-    "PERSONA-2": "Rahul Verma",
-    "PERSONA-3": "Imran Sheikh",
-    "PERSONA-4": "Anita Rao",
-    "PERSONA-5": "Karthik Nair",
-    "PERSONA-6": "Meera Iyer",
-}
-_CLOSED_STAGES = {"Rejected", "Disbursed (simulated)", "Awaiting documents"}
-
 
 def _select_application(application_id: str) -> None:
     """Store the selected application before rerendering the list page."""
@@ -96,13 +75,6 @@ def _open_human_review(application_id: str) -> None:
     st.session_state["selected_application"] = application_id
     st.session_state["review_open"] = application_id
     st.switch_page(OPERATE_PAGES["human_review"])
-
-
-def _load_data(store: SQLiteStore) -> None:
-    """Load synthetic data into the selected empty demo store."""
-    counts = seed_demo_data(store, reset=True)
-    count_text = ", ".join(f"{name}: {count}" for name, count in counts.items())
-    st.toast(f"Demo data loaded. {count_text}")
 
 
 def _age_in_days(submitted_at: str) -> int:
@@ -171,38 +143,17 @@ def _render_application_table(frame: pd.DataFrame) -> None:
     )
 
 
-def _render_empty_state(store: SQLiteStore) -> None:
-    """Show an actionable empty database state."""
-    render_header("Applications", "Explore the synthetic personal-loan portfolio.")
-    st.info("No demo applications are loaded yet. Load the synthetic sample dataset to begin.")
-    st.button("Load demo data", on_click=_load_data, args=(store,), key="load_applications_data")
+def _render_empty_state() -> None:
+    """Offer the first-party application workflow without synthetic records."""
+    from loanpilot.navigation import OPERATE_PAGES
 
-
-def _render_demo_cards(rows: pd.DataFrame) -> None:
-    """Keep persona cases above the rest of the filtered application list."""
-    if rows.empty:
-        return
-    st.subheader("Demo cases")
-    for start in range(0, len(rows), 3):
-        row_group = rows.iloc[start : start + 3]
-        columns = st.columns(3)
-        for column, (_, row) in zip(columns, row_group.iterrows()):
-            persona_key = row["persona_key"]
-            story = _PERSONA_STORIES[persona_key]
-            with column:
-                st.markdown(f"**{escape(str(row['applicant']))}**")
-                st.markdown(
-                    f'<div class="lp-demo-story" title="{escape(story)}">'
-                    f"{escape(story)}</div>",
-                    unsafe_allow_html=True,
-                )
-                st.button(
-                    "Open",
-                    key=f"open_{row['application_id']}",
-                    on_click=_select_application,
-                    args=(row["application_id"],),
-                    width="stretch",
-                )
+    render_header("Applications", "Review applications submitted through LoanPilot.")
+    st.info("No applications have been submitted yet.")
+    st.page_link(
+        OPERATE_PAGES["new_application"],
+        label="Create an application",
+        icon=":material/add:",
+    )
 
 
 def _previous_applications_page() -> None:
@@ -220,15 +171,15 @@ def _next_applications_page(page_count: int) -> None:
 
 
 def _render_applications_list(store: SQLiteStore) -> None:
-    """Render filters, counts, pinned personas, and the historical table."""
+    """Render searchable user-created application records."""
     render_header(
         "Applications",
-        "Browse the synthetic personal-loan queue, spot priority cases, and open a case workspace.",
+        "Search submitted applications, review their status, and open a case workspace.",
         "OPERATE  /  PORTFOLIO",
     )
-    all_rows = list_applications(store=store)
+    all_rows = list_applications({"user_created_only": True}, store)
     if all_rows.empty:
-        _render_empty_state(store)
+        _render_empty_state()
         return
 
     stage_options = ["All", *sorted(all_rows["stage"].dropna().unique().tolist())]
@@ -239,7 +190,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
             for value in all_rows["ai_recommendation"].dropna().unique().tolist()
         ),
     ]
-    filter_columns = st.columns([1.2, 1.2, 1.4, 1, 2])
+    filter_columns = st.columns([1.2, 1.2, 1.4, 2])
     with filter_columns[0]:
         stage = st.selectbox("Stage", stage_options, key="applications_stage")
     with filter_columns[1]:
@@ -256,36 +207,20 @@ def _render_applications_list(store: SQLiteStore) -> None:
             key="applications_worklist",
         )
     with filter_columns[3]:
-        demo_only = st.toggle("Demo cases only", key="applications_demo_only")
-    with filter_columns[4]:
         search = st.text_input("Search applicant or case reference", key="applications_search")
 
-    active_count = int((~all_rows["stage"].isin(_CLOSED_STAGES)).sum())
-    closed_count = int(all_rows["stage"].isin(_CLOSED_STAGES).sum())
-    st.caption(
-        f"Active {active_count:,} · Closed {closed_count:,} · All {len(all_rows):,}"
-    )
     filters = {
         "stage": stage,
         "recommendation": recommendation,
         "worklist": worklist or "Active",
-        "demo_only": demo_only,
+        "user_created_only": True,
         "search": search.strip(),
     }
     filtered = list_applications(filters, store)
-    pinned_mask = filtered["persona_key"].notna() & ~filtered["stage"].isin(_CLOSED_STAGES)
-    demo_rows = filtered.loc[pinned_mask]
-    open_options = filtered.loc[~pinned_mask]
-    historical_rows = filtered.loc[
-        filtered["persona_key"].isna()
-        & ~filtered["application_id"].astype(str).str.startswith("APP-CUSTOM-")
-    ]
-
-    metric_columns = st.columns(3)
-    metric_columns[0].metric("Matching applications", len(filtered))
-    metric_columns[1].metric("Open demo cases", len(demo_rows))
-    metric_columns[2].metric("Historical applications", len(historical_rows))
-    _render_demo_cards(demo_rows)
+    st.caption(f"{len(filtered):,} matching applications")
+    if filtered.empty:
+        st.info("No applications match these filters.")
+        return
 
     st.subheader("Application list")
     page_size = 25
@@ -314,25 +249,23 @@ def _render_applications_list(store: SQLiteStore) -> None:
     page_rows = filtered.iloc[page_index * page_size : (page_index + 1) * page_size]
     _render_application_table(_list_frame(page_rows))
 
-    if not open_options.empty:
-        selectable_ids = open_options["application_id"].tolist()
-        selected_historical = st.selectbox(
+    if not filtered.empty:
+        selectable_ids = filtered["application_id"].tolist()
+        selected_application = st.selectbox(
             "Open a case from the list",
             selectable_ids,
             format_func=lambda application_id: str(
-                open_options.loc[
-                    open_options.application_id == application_id, "applicant"
+                filtered.loc[
+                    filtered.application_id == application_id, "applicant"
                 ].iloc[0]
             ),
             key="list_case_select",
         )
-        with st.expander("Selected case reference"):
-            st.code(str(selected_historical))
         st.button(
             "Open selected application",
-            key="open_historical_case",
+            key="open_selected_application",
             on_click=_select_application,
-            args=(selected_historical,),
+            args=(selected_application,),
         )
 
 
@@ -680,11 +613,6 @@ def _render_summary(application: pd.Series, documents: pd.DataFrame) -> None:
             ),
         )
         st.caption(f"Illustrative pricing: {rate:.1%} annual reducing-balance rate.")
-
-    persona_key = application["persona_key"]
-    if persona_key:
-        st.info(f"**Demo case · {_PERSONA_SHORT_NAMES[persona_key]}**  \n{_PERSONA_STORIES[persona_key]}")
-
 
 def _render_documents(
     application_id: str,
@@ -1101,7 +1029,7 @@ def render(store: SQLiteStore | None = None) -> None:
     create_schema(store)
     counts = store.table_counts()
     if counts.get("cur_applications", 0) == 0:
-        _render_empty_state(store)
+        _render_empty_state()
         return
     selected_application = st.session_state.get("selected_application")
     if selected_application:

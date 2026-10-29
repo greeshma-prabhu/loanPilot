@@ -13,6 +13,18 @@ Sign-in persists across page refreshes for up to 7 days or until sign out. Set
 secret for stable sessions across app restarts and multiple instances. Sign-in
 has no MFA or single sign-on.
 
+The **Document Library** accepts PDF references up to 10 MB. Original files are
+stored locally in `data/document_library/`; metadata and extracted text are
+stored in the `raw_library_documents` SQLite table. Uploaded files are excluded
+from Git. Processed text can be keyword-matched and shown as reference excerpts
+in AI Assessment, but it does not change the configured deterministic policy or
+assessment outcome. On upload, selectable text is summarized once using the
+configured Gemini model; the headline, summary, status, and upload time remain
+with the document record and appear in Overview. Failed summaries can be retried
+from the library and are never replaced with invented content. The embedded PDF
+viewer is optional (`streamlit-pdf`); if it is not installed, the library offers
+the original PDF as a download instead.
+
 Demonstration with synthetic data. Not a real bank system or credit decision.
 
 ## Run locally
@@ -143,7 +155,7 @@ style checks. Tests use temporary databases where writes are required.
 app.py                      Streamlit entry point and navigation
 loanpilot/
   agent/                    Assessment, language wrapper, and sanction workflows
-  data/                     SQLite schema, queries, bootstrap, and seed data
+  data/                       SQLite schema, queries, bootstrap, seed data, and document library
   pages/                    The nine Streamlit pages
   policy/                   Illustrative deterministic policy configuration
   config.py                 Project-root paths and application settings

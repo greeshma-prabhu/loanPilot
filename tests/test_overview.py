@@ -1,0 +1,194 @@
+"""Portfolio analytics and high-attention navigation tests."""
+
+from streamlit.testing.v1 import AppTest
+from fpdf import FPDF
+
+from loanpilot.data.document_library import (
+    format_document_upload_time,
+    save_uploaded_pdf,
+)
+from loanpilot.data.schema import create_schema
+from loanpilot.data.store import SQLiteStore
+from loanpilot.pages import overview
+
+
+def _pdf_bytes() -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.multi_cell(0, 10, "Lending eligibility requires verified monthly income.")
+    return bytes(pdf.output())
+
+
+def _insert_application(
+    store: SQLiteStore,
+    application_id: str,
+    submitted_at: str,
+    stage: str,
+    *,
+    ai_recommendation: str | None = None,
+    human_decision: str | None = None,
+    decided_at: str | None = None,
+) -> None:
+    customer_id = f"C-{application_id}"
+    store.execute(
+        """
+        INSERT INTO cur_customers (
+            customer_id, name, dob, age, city, employer, employment_type,
+            current_tenure_months, total_experience_months, net_monthly_income,
+            pan_demo_id, kyc_status, relationship_since
+        ) VALUES (?, ?, '1990-01-01', 36, 'Pune', 'Employer', 'Salaried',
+                  24, 60, 50000, ?, 'Verified', '2020-01-01')
+        """,
+        (customer_id, application_id, f"PAN-{application_id}"),
+    )
+    store.execute(
+        """
+        INSERT INTO cur_applications (
+            application_id, customer_id, requested_amount, tenure_months,
+            purpose, channel, submitted_at, stage
+        ) VALUES (?, ?, 100000, 24, 'Personal', 'Branch', ?, ?)
+        """,
+        (application_id, customer_id, submitted_at, stage),
+    )
+    if ai_recommendation is not None or human_decision is not None:
+        store.execute(
+            """
+            INSERT INTO cur_decisions (
+                application_id, ai_recommendation, ai_reasons_json,
+                human_decision, decided_at
+            ) VALUES (?, ?, '{"risk_band":"Medium"}', ?, ?)
+            """,
+            (
+                application_id,
+                ai_recommendation or "Refer",
+                human_decision,
+                decided_at,
+            ),
+        )
+
+
+def test_portfolio_counts_use_persisted_statuses_and_submission_month(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "portfolio.db")
+    create_schema(store)
+    _insert_application(
+        store,
+        "APP-APPROVED",
+        "2025-01-15T10:00:00",
+        "Sanction",
+        ai_recommendation="Decline",
+        human_decision="Approve",
+        decided_at="2026-03-01T10:00:00",
+    )
+    _insert_application(
+        store,
+        "APP-PENDING-AI-APPROVE",
+        "2025-01-20T10:00:00",
+        "Human Review",
+        ai_recommendation="Approve",
+    )
+    _insert_application(
+        store,
+        "APP-REJECTED",
+        "2025-02-05T10:00:00",
+        "Rejected",
+        ai_recommendation="Approve",
+        human_decision="Reject",
+        decided_at="2025-02-08T10:00:00",
+    )
+    _insert_application(
+        store,
+        "APP-DOCS",
+        "2025-02-10T10:00:00",
+        "Awaiting documents",
+        ai_recommendation="Refer",
+        human_decision="Request documents",
+    )
+    _insert_application(
+        store,
+        "APP-2026",
+        "2026-01-01T10:00:00",
+        "Human Review",
+        ai_recommendation="Approve",
+    )
+
+    records = overview._portfolio_records(store)
+    monthly_2025 = overview._monthly_counts(records, 2025)
+    totals_2025 = monthly_2025.groupby("status")["count"].sum().to_dict()
+    january_2025 = monthly_2025.loc[monthly_2025["month"] == 1, "count"].sum()
+    february_2025 = monthly_2025.loc[monthly_2025["month"] == 2, "count"].sum()
+    monthly_2026 = overview._monthly_counts(records, 2026)
+    totals_2026 = monthly_2026.groupby("status")["count"].sum().to_dict()
+
+    assert records["application_id"].is_unique
+    assert totals_2025 == {"Approved": 1, "Pending": 2, "Rejected": 1}
+    assert january_2025 == 2
+    assert february_2025 == 2
+    assert totals_2026 == {"Approved": 0, "Pending": 1, "Rejected": 0}
+    assert int(monthly_2025["count"].sum()) == len(records.loc[records["year"] == 2025])
+
+
+def test_overview_opens_the_selected_attention_application(tmp_path, monkeypatch) -> None:
+    store = SQLiteStore(tmp_path / "attention.db")
+    create_schema(store)
+    _insert_application(
+        store,
+        "APP-ATTENTION",
+        "2025-06-01T10:00:00",
+        "Human Review",
+        ai_recommendation="Refer",
+    )
+    switched = []
+    monkeypatch.setattr(overview.st, "switch_page", switched.append)
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    assert not app.exception
+    app.button(key="overview_open_APP-ATTENTION").click().run()
+    assert not app.exception
+    assert app.session_state["selected_application"] == "APP-ATTENTION"
+    assert len(switched) == 1
+
+
+def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "latest-updates.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "income-policy.pdf",
+        _pdf_bytes(),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    store.execute(
+        """
+        UPDATE raw_library_documents
+        SET summary_status = 'Completed',
+            summary_method = 'Local extractive',
+            summary_headline = 'Verified income requirements',
+            summary_text = 'The document requires verified income evidence. It outlines how income should be reviewed.'
+        WHERE document_id = ?
+        """,
+        (document["document_id"],),
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    assert not app.exception
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert "Verified income requirements" in content
+    assert "The document requires verified income evidence." in content
+    assert format_document_upload_time(document["uploaded_at"]) in content
+    assert "Local extractive" not in content
+    assert not app.get("file_uploader")
+    assert not any("Read document" in button.label for button in app.button)

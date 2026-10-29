@@ -2,11 +2,9 @@
 
 from streamlit.testing.v1 import AppTest
 import pytest
-import pandas as pd
 
 from loanpilot.badges import implementation_badge
 from loanpilot.config import APP_PATH
-from loanpilot.data.queries import save_assessment_decision
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
@@ -17,6 +15,7 @@ from loanpilot.pages import (
     applications,
     approach_story,
     data_explorer,
+    document_library,
     human_review,
     login,
     new_application,
@@ -30,6 +29,8 @@ PAGE_MODULES = [
     new_application,
     ai_assessment,
     human_review,
+    document_library,
+    document_library,
     approach_story,
     technical_architecture,
     data_explorer,
@@ -43,6 +44,7 @@ _STORE_PAGES = {
     "new_application",
     "ai_assessment",
     "human_review",
+    "document_library",
     "data_explorer",
 }
 
@@ -91,6 +93,15 @@ def test_know_more_pages_are_registered_in_hidden_navigation() -> None:
     assert set(KNOW_MORE_PAGES.values()).issubset(registered_pages)
 
 
+def test_document_library_follows_human_review_in_operate_navigation() -> None:
+    """Keep the library immediately after review in the shared sidebar order."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    ordered_keys = list(OPERATE_PAGES)
+    review_index = ordered_keys.index("human_review")
+    assert ordered_keys[review_index + 1] == "document_library"
+
+
 @pytest.mark.parametrize(
     ("module", "data_state"),
     [(module, state) for module in PAGE_MODULES for state in ("empty", "seeded")],
@@ -107,13 +118,38 @@ def test_each_page_loads_for_empty_and_seeded_data(module, data_state, tmp_path,
     assert not app.exception, f"{module.__name__} with {data_state} data"
 
 
-def test_overview_empty_state_has_single_start_demo_action(tmp_path) -> None:
-    """An empty dashboard directs the presenter to its single command-centre action."""
+def test_overview_contains_only_the_command_centre_sections(tmp_path) -> None:
+    """Keep the Overview focused on analytics, document updates, and attention."""
     store = SQLiteStore(tmp_path / "overview-empty.db")
     create_schema(store)
     app = _render_page(overview, store).run()
     assert not app.exception
-    assert sum(button.label == "Start demo with Priya Menon" for button in app.button) == 1
+    labels = [item.value for item in app.subheader]
+    assert labels == [
+        "Loan Portfolio Analytics",
+        "Latest Updates",
+        "Needs Your Attention",
+    ]
+    assert any(
+        "Loan portfolio performance and lending intelligence." in item.value
+        for item in app.markdown
+    )
+    visible_text = "\n".join(
+        str(element.value)
+        for name in ("title", "header", "subheader", "caption", "markdown", "button")
+        for element in getattr(app, name, [])
+    )
+    for removed in (
+        "Start demo with Priya Menon",
+        "Where every case stands",
+        "Risk-band distribution",
+        "Historical portfolio",
+        "Implementation status",
+        "Presenter controls",
+        "Reset demo data",
+        "Remove all custom cases",
+    ):
+        assert removed not in visible_text
 
 
 def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None:
@@ -147,36 +183,6 @@ def test_synthetic_data_banner_is_only_shown_on_about(seeded_store) -> None:
             assert text in visible_text
         else:
             assert text not in visible_text, module.__name__
-
-
-def test_prepare_demo_skips_priya_and_is_idempotent(seeded_store, monkeypatch) -> None:
-    """Starting demo assesses other cases and leaves Priya untouched."""
-    calls = []
-
-    def fake_assessment(application_id: str, store: SQLiteStore) -> None:
-        calls.append(application_id)
-        save_assessment_decision(
-            application_id,
-            "Approve",
-            "{}",
-            "2026-10-27T12:00:00",
-            store,
-        )
-
-    monkeypatch.setattr(overview, "run_assessment", fake_assessment)
-    assessed, skipped = overview._prepare_demo(seeded_store)
-    assert assessed == 5
-    assert skipped == 1
-    assert len(calls) == 5
-
-    applications = overview.list_applications({"demo_only": True}, seeded_store)
-    priya = applications.loc[applications["applicant"] == "Priya Menon"].iloc[0]
-    assert pd.isna(priya["ai_recommendation"])
-
-    repeated_assessed, repeated_skipped = overview._prepare_demo(seeded_store)
-    assert repeated_assessed == 0
-    assert repeated_skipped == 6
-    assert len(calls) == 5
 
 
 def test_badge_helper_output() -> None:

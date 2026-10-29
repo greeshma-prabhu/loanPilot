@@ -144,13 +144,14 @@ def test_missing_key_replays_recorded_trace(seeded_store, monkeypatch) -> None:
     assert extracted["fields"]["net"] == 95000
 
 
-@pytest.mark.parametrize("persona_number", range(1, 7))
-def test_assessment_page_renders_each_persona(
-    seeded_store, persona_number: int, monkeypatch
+def test_assessment_page_renders_user_created_case(
+    seeded_store, monkeypatch, create_user_case
 ) -> None:
-    """The completed assessment page renders without exceptions for every persona."""
+    """The assessment page runs against a user-created application."""
     monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
-    application_id = f"APP-PERSONA-{persona_number}"
+    application_id = create_user_case(
+        seeded_store, "APP-NEW-AGENT-UI", "Assessment Applicant"
+    )
     script = (
         "import streamlit as st\n"
         "from loanpilot.pages.ai_assessment import render\n"

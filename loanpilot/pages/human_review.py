@@ -131,7 +131,12 @@ def _case_status(stage: str) -> tuple[str, str]:
 def _render_queue_filters(store: SQLiteStore) -> tuple[pd.DataFrame, str]:
     """Render filter buttons with case counts and a lightweight search field."""
     active_filter = st.session_state.get("review_filter", "Pending")
-    all_cases = get_human_review_cases("All", "", store)
+    all_cases = get_human_review_cases(
+        "All",
+        "",
+        store,
+        user_created_only=True,
+    )
     if all_cases.empty:
         counts = {"Pending": 0, "Approved": 0, "Rejected": 0, "All": 0}
     else:
@@ -157,7 +162,12 @@ def _render_queue_filters(store: SQLiteStore) -> tuple[pd.DataFrame, str]:
         placeholder="Name or case ID",
         key="review_search",
     )
-    cases = get_human_review_cases(active_filter, search, store)
+    cases = get_human_review_cases(
+        active_filter,
+        search,
+        store,
+        user_created_only=True,
+    )
     return cases, active_filter
 
 
@@ -381,13 +391,17 @@ def _render_decision_panel(
     with fields[1]:
         with st.container(key=f"hr-reason-{application_id}", border=True):
             st.markdown("**Required · written reason**")
-            st.text_area(
+            reason_text = st.text_area(
                 "Explain your decision (minimum 20 characters)",
                 key=reason_key,
                 height=130,
             )
-            reason_length = len(str(st.session_state.get(reason_key, "")).strip())
+            reason_length = len(reason_text)
             st.caption(f"{reason_length} / 20 characters")
+            if len(reason_text.strip()) < 20:
+                st.warning("Enter at least 20 non-whitespace characters to continue.")
+            else:
+                st.success("Minimum written-reason length met.")
 
     conditions = list(DEFAULT_CONDITIONS)
     if action_code == "approve_with_conditions":
@@ -402,7 +416,7 @@ def _render_decision_panel(
         f"**You are about to {action.upper()} {summary['application']['name']}: "
         f"stage will become {next_stage}.**"
     )
-    reason_ready = reason_length >= 20
+    reason_ready = len(reason_text.strip()) >= 20
     conditions_ready = action_code != "approve_with_conditions" or bool(conditions)
     rate_ready = action_code not in {"approve", "approve_with_conditions", "modify_terms"} or rate is not None
     if not conditions_ready:

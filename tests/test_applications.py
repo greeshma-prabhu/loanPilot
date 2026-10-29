@@ -1,19 +1,72 @@
 """Applications list and case-view tests."""
 
+from datetime import datetime
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from loanpilot.components import calculate_foir, fmt_inr
+from loanpilot.data.queries import create_intake_application, list_applications
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
 
 
 @pytest.fixture(scope="module")
 def seeded_store(tmp_path_factory) -> SQLiteStore:
-    """Create one isolated synthetic database for app smoke tests."""
+    """Create a store with legacy seeded records and one genuine intake record."""
     store = SQLiteStore(tmp_path_factory.mktemp("applications") / "demo.db")
     seed_demo_data(store, reset=True)
+    _create_user_application(store)
     return store
+
+
+def _create_user_application(store: SQLiteStore) -> str:
+    """Create a user-owned intake record with the evidence needed by the case view."""
+    application_id = "APP-NEW-APPLICATION-TEST"
+    create_intake_application(
+        {
+            "name": "Test Applicant",
+            "dob": "1990-01-01",
+            "age": 36,
+            "city": "Pune",
+            "mobile": "9000000000",
+            "employer": "Test Employer",
+            "employment_type": "Salaried",
+            "current_tenure_months": 60,
+            "total_experience_months": 120,
+            "net_monthly_income": 100000,
+            "existing_emi": 0,
+            "pan_demo_id": "TEST1234A",
+        },
+        {
+            "requested_amount": 200000,
+            "tenure_months": 36,
+            "purpose": "Education",
+            "submitted_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        {
+            "provider": "Test bureau",
+            "score": 800,
+            "thin_file": False,
+            "active_accounts": 1,
+            "enquiries_6m": 0,
+            "max_dpd_24m": 0,
+            "written_off": False,
+            "utilization_pct": 5,
+        },
+        {"status": "verified", "checks": []},
+        [
+            {
+                "doc_type": doc_type,
+                "file_name": f"{doc_type}.pdf",
+                "file_path": str(store.path.parent / f"{doc_type}.pdf"),
+                "text_content": f"Verified test {doc_type} document.",
+            }
+            for doc_type in ("identity", "address", "income", "bank_statement")
+        ],
+        store,
+        application_id=application_id,
+    )
+    return application_id
 
 
 def _render_app(store: SQLiteStore) -> AppTest:
@@ -47,43 +100,39 @@ def _render_navigation_app(store: SQLiteStore) -> AppTest:
     return AppTest.from_string(script)
 
 
-def test_applications_list_renders_compact_demo_cases_and_paged_table(seeded_store) -> None:
-    """The list shows compact persona entries and no more than 25 table rows."""
+def test_applications_list_shows_only_user_created_records(seeded_store) -> None:
+    """Seeded and synthetic cases stay stored but do not appear in the worklist."""
     app = _render_app(seeded_store).run()
     assert not app.exception
     assert app.title[0].value == "Applications"
-    assert any("Matching applications" in metric.label and metric.value == "66" for metric in app.metric)
-    assert any("Priya Menon" in markdown.value for markdown in app.markdown)
-    assert any(button.key == "open_APP-PERSONA-1" and button.label == "Open" for button in app.button)
+    assert any("1 matching applications" in item.value for item in app.caption)
+    assert any("Test Applicant" in markdown.value for markdown in app.markdown)
+    assert not any("Priya Menon" in markdown.value for markdown in app.markdown)
+    assert not any(button.key.startswith("open_APP-PERSONA-") for button in app.button)
     table = next(markdown.value for markdown in app.markdown if "<table" in markdown.value)
-    assert table.count("<tr>") == 26
+    assert table.count("<tr>") == 2
+    stored_ids = set(list_applications({}, seeded_store)["application_id"])
+    assert {"APP-PERSONA-1", "APP-HIST-001", "APP-NEW-APPLICATION-TEST"} <= stored_ids
 
 
-def test_stage_filter_narrows_applications(seeded_store) -> None:
-    """Selecting the Submitted stage narrows the list to six ready personas."""
+def test_stage_filter_narrows_user_created_applications(seeded_store) -> None:
+    """Stage filtering continues to work for genuine user-created applications."""
     app = _render_app(seeded_store).run()
     app.selectbox(key="applications_stage").select("Submitted").run()
     assert not app.exception
-    assert any(metric.label == "Matching applications" and metric.value == "6" for metric in app.metric)
+    assert any("1 matching applications" in item.value for item in app.caption)
     table = next(markdown.value for markdown in app.markdown if "<table" in markdown.value)
-    assert table.count("<tr>") == 7
+    assert table.count("<tr>") == 2
 
 
-@pytest.mark.parametrize(
-    ("application_id", "applicant"),
-    [
-        ("APP-PERSONA-1", "Priya Menon"),
-        ("APP-PERSONA-4", "Anita Rao"),
-    ],
-)
-def test_opening_persona_case_renders_all_tabs(
-    seeded_store, application_id: str, applicant: str
-) -> None:
-    """Opening a pinned persona case renders its full case-view tab set."""
+def test_opening_user_case_renders_all_tabs(seeded_store) -> None:
+    """A user-created application opens its full case workspace."""
+    application_id = "APP-NEW-APPLICATION-TEST"
     app = _render_app(seeded_store).run()
-    app.button(key=f"open_{application_id}").click().run()
+    app.selectbox(key="list_case_select").select(application_id).run()
+    app.button(key="open_selected_application").click().run()
     assert not app.exception
-    assert any(applicant in markdown.value for markdown in app.markdown)
+    assert any("Test Applicant" in markdown.value for markdown in app.markdown)
     assert [tab.label for tab in app.tabs] == [
         "Summary",
         "Documents",
@@ -96,44 +145,36 @@ def test_opening_persona_case_renders_all_tabs(
     ]
 
 
-def test_anita_financials_show_verified_foir_above_55_percent(seeded_store) -> None:
-    """Anita's lower verified salary makes her computed FOIR exceed 55%."""
-    app = _render_app(seeded_store).run()
-    app.button(key="open_APP-PERSONA-4").click().run()
-    financials = app.tabs[2]
-    assert any(
-        "FOIR · verified income" in markdown.value and "62.0%" in markdown.value
-        for markdown in financials.markdown
-    )
-
-
 def test_case_opens_assessment_and_preserves_selected_application(seeded_store) -> None:
     """The assessment button switches pages with the selected case preserved."""
     app = _render_navigation_app(seeded_store).run()
-    app.button(key="open_APP-PERSONA-1").click().run()
+    app.selectbox(key="list_case_select").select("APP-NEW-APPLICATION-TEST").run()
+    app.button(key="open_selected_application").click().run()
     app.button(key="open_ai_assessment").click().run()
     assert not app.exception
     assert app.title[0].value == "AI Assessment"
-    assert app.session_state["selected_application"] == "APP-PERSONA-1"
+    assert app.session_state["selected_application"] == "APP-NEW-APPLICATION-TEST"
 
 
 def test_back_callback_returns_to_applications(seeded_store) -> None:
     """The case back button clears selection and returns to list mode."""
     app = _render_navigation_app(seeded_store).run()
-    app.button(key="open_APP-PERSONA-1").click().run()
+    app.selectbox(key="list_case_select").select("APP-NEW-APPLICATION-TEST").run()
+    app.button(key="open_selected_application").click().run()
     app.button(key="back_to_applications").click().run()
     assert not app.exception
     assert app.title[0].value == "Applications"
     assert "selected_application" not in app.session_state
 
 
-def test_empty_database_shows_load_demo_button(tmp_path) -> None:
-    """An empty store provides a friendly load-data action without crashing."""
+def test_seeded_only_store_shows_clean_empty_state_without_loading_demos(tmp_path) -> None:
+    """A store containing only seeded examples is operationally empty."""
     empty_store = SQLiteStore(tmp_path / "empty.db")
+    seed_demo_data(empty_store, reset=True)
     app = _render_app(empty_store).run()
     assert not app.exception
-    assert any("No demo applications are loaded" in element.value for element in app.info)
-    assert any(button.label == "Load demo data" for button in app.button)
+    assert any("No applications have been submitted yet." in element.value for element in app.info)
+    assert not any("Load demo data" in button.label for button in app.button)
 
 
 @pytest.mark.parametrize(

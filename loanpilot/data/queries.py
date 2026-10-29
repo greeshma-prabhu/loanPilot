@@ -33,6 +33,14 @@ def list_applications(
         params.append(filters["recommendation"])
     if filters.get("demo_only"):
         clauses.append("a.persona_key IS NOT NULL")
+    if filters.get("user_created_only"):
+        clauses.extend(
+            (
+                "a.persona_key IS NULL",
+                "a.application_id NOT LIKE 'APP-HIST-%'",
+                "a.application_id NOT LIKE 'APP-CUSTOM-%'",
+            )
+        )
     if filters.get("worklist") == "Active":
         clauses.append(
             "a.stage NOT IN ('Rejected', 'Disbursed (simulated)', 'Awaiting documents')"
@@ -407,6 +415,8 @@ def get_human_review_cases(
     status_filter: str = "Pending",
     search: str = "",
     store: SQLiteStore | None = None,
+    *,
+    user_created_only: bool = False,
 ) -> pd.DataFrame:
     """Fetch cases for the Human Review queue using its status and search filters."""
     stage_filters = {
@@ -428,8 +438,14 @@ def get_human_review_cases(
     placeholders = ", ".join("?" for _ in stages)
     search_sql = ""
     params: list[Any] = list(stages)
+    if user_created_only:
+        search_sql += (
+            "AND a.persona_key IS NULL "
+            "AND a.application_id NOT LIKE 'APP-HIST-%' "
+            "AND a.application_id NOT LIKE 'APP-CUSTOM-%' "
+        )
     if search.strip():
-        search_sql = "AND (c.name LIKE ? OR a.application_id LIKE ?)"
+        search_sql += "AND (c.name LIKE ? OR a.application_id LIKE ?) "
         pattern = f"%{search.strip()}%"
         params.extend((pattern, pattern))
     return _store(store).query(
@@ -984,7 +1000,7 @@ def overview_metrics(store: SQLiteStore | None = None) -> dict[str, float | int 
 
 
 def overview_attention_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
-    """List current cases awaiting human review for the dashboard."""
+    """List genuine user-created cases awaiting human review."""
     return _store(store).query(
         """
         SELECT a.application_id, c.name AS applicant, a.submitted_at,
@@ -994,6 +1010,9 @@ def overview_attention_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
         JOIN cur_customers c ON c.customer_id = a.customer_id
         LEFT JOIN cur_decisions d ON d.application_id = a.application_id
         WHERE a.stage = ?
+          AND a.persona_key IS NULL
+          AND a.application_id NOT LIKE 'APP-HIST-%'
+          AND a.application_id NOT LIKE 'APP-CUSTOM-%'
         ORDER BY CASE d.ai_recommendation
                      WHEN 'Decline' THEN 0 WHEN 'Refer' THEN 1 ELSE 2
                  END,

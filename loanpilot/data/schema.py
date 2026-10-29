@@ -3,6 +3,22 @@
 from loanpilot.data.store import SQLiteStore
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS raw_library_documents (
+    document_id TEXT PRIMARY KEY,
+    original_filename TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    processing_status TEXT NOT NULL
+        CHECK (processing_status IN ('Uploaded', 'Processed', 'Failed')),
+    extracted_text TEXT NOT NULL DEFAULT '',
+    processing_error TEXT NOT NULL DEFAULT '',
+    summary_status TEXT NOT NULL DEFAULT 'Not requested',
+    summary_method TEXT NOT NULL DEFAULT '',
+    summary_headline TEXT NOT NULL DEFAULT '',
+    summary_text TEXT NOT NULL DEFAULT '',
+    summary_error TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS raw_documents (
     doc_id TEXT PRIMARY KEY,
     application_id TEXT NOT NULL,
@@ -279,3 +295,18 @@ def create_schema(store: SQLiteStore) -> None:
             connection.execute(
                 "ALTER TABLE cur_applications ADD COLUMN owner TEXT NOT NULL DEFAULT ''"
             )
+        document_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(raw_library_documents)")
+        }
+        for column, definition in (
+            ("summary_status", "TEXT NOT NULL DEFAULT 'Not requested'"),
+            ("summary_method", "TEXT NOT NULL DEFAULT ''"),
+            ("summary_headline", "TEXT NOT NULL DEFAULT ''"),
+            ("summary_text", "TEXT NOT NULL DEFAULT ''"),
+            ("summary_error", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in document_columns:
+                connection.execute(
+                    f"ALTER TABLE raw_library_documents ADD COLUMN {column} {definition}"
+                )

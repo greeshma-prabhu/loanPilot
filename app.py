@@ -77,7 +77,7 @@ def main() -> None:
         login.render()
         return
 
-    from loanpilot.data.bootstrap import bootstrap_demo_data
+    from loanpilot.data.schema import create_schema
     from loanpilot.data.store import SQLiteStore
     navigation_pages = {
         **NAVIGATION,
@@ -86,12 +86,7 @@ def main() -> None:
     navigation = st.navigation(navigation_pages, position="hidden")
 
     store = SQLiteStore()
-    if not st.session_state.get("_loanpilot_bootstrapped"):
-        with st.spinner("Checking the synthetic demo setup..."):
-            bootstrap_status = bootstrap_demo_data(store)
-        st.session_state["_loanpilot_bootstrapped"] = True
-        if bootstrap_status:
-            st.session_state["_loanpilot_bootstrap_notice"] = bootstrap_status
+    create_schema(store)
 
     with st.sidebar:
         with st.container(key="sidebar-layout"):
@@ -101,9 +96,10 @@ def main() -> None:
                     f'<span>{config.BANK_NAME}</span></div>',
                     unsafe_allow_html=True,
                 )
-                for key in ("overview", "applications", "new_application", "ai_assessment", "human_review"):
+                for key in OPERATE_PAGES:
                     st.page_link(OPERATE_PAGES[key])
-                with st.expander("Know more", expanded=False):
+            with st.container(key="sidebar-sign-out-area"):
+                with st.expander("Know More", expanded=False):
                     for key, label in (
                         ("approach_story", "Approach Story"),
                         ("technical_architecture", "Technical Architecture"),
@@ -111,14 +107,6 @@ def main() -> None:
                         ("about_faq", "About & FAQ"),
                     ):
                         st.page_link(KNOW_MORE_PAGES[key], label=label)
-                bootstrap_notice = st.session_state.pop(
-                    "_loanpilot_bootstrap_notice", None
-                )
-                if bootstrap_notice == "initialized":
-                    st.success("First-run setup complete. Synthetic cases and sample PDFs are ready.")
-                elif bootstrap_notice == "documents_restored":
-                    st.success("Missing sample documents were restored from synthetic data.")
-            with st.container(key="sidebar-sign-out-area"):
                 st.button(
                     "Sign out",
                     key="sign_out",

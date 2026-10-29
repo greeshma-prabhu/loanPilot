@@ -8,6 +8,7 @@ from loanpilot.pages import (
     applications,
     approach_story,
     data_explorer,
+    document_library,
     human_review,
     new_application,
     overview,
@@ -27,6 +28,11 @@ OPERATE_PAGES = {
     ),
     "human_review": st.Page(
         human_review.render, title="Human Review", url_path="human-review"
+    ),
+    "document_library": st.Page(
+        document_library.render,
+        title="Document Library",
+        url_path="document-library",
     ),
 }
 

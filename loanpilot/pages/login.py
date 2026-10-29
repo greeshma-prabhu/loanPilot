@@ -12,13 +12,6 @@ def _show_forgot_password() -> None:
     st.toast("Contact your administrator (demo)")
 
 
-def _go_to_overview() -> None:
-    """Navigate a successfully authenticated user to Overview."""
-    from loanpilot.navigation import OPERATE_PAGES
-
-    st.switch_page(OPERATE_PAGES["overview"])
-
-
 def _sign_in_demo() -> None:
     """Start an explicitly configured demo-access session."""
     st.session_state["auth"] = {
@@ -26,8 +19,8 @@ def _sign_in_demo() -> None:
         "role": "Guest (demo)",
         "method": "demo",
     }
+    st.session_state["_auth_cookie_action"] = "set"
     st.toast("Welcome back, Demo")
-    _go_to_overview()
 
 
 def _credential_sign_in() -> None:
@@ -56,12 +49,12 @@ def _credential_sign_in() -> None:
             "role": user["role"],
             "method": "credentials",
         }
+        st.session_state["_auth_cookie_action"] = "set"
         st.session_state["auth_failed_attempts"] = 0
         st.session_state.pop("auth_locked_until", None)
         st.session_state["login_error"] = ""
         st.session_state["login_password"] = ""
         st.toast(f"Welcome back, {user['display_name'].split()[0]}")
-        _go_to_overview()
         return
 
     attempts = int(st.session_state.get("auth_failed_attempts", 0)) + 1

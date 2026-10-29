@@ -128,7 +128,7 @@ def render() -> None:
         st.subheader("Governance and privacy")
         st.markdown(
             "- Human-in-the-loop: a person decides before sanction; AI cannot approve a sanction.\n"
-            "- Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.\n"
+            "- Demo-grade sign-in: sessions persist for up to 7 days or until sign out; there is no MFA or single sign-on.\n"
             "- Audit: steps, tool outputs, reviewer action and written override reasons are recorded.\n"
             "- PII stance: this demo uses synthetic people and fake `DEMO…` identifiers only. "
             "Uploaded files should also be synthetic.\n"

@@ -8,7 +8,10 @@ recommend and explain, but a human reviewer makes the decision.
 The workspace includes demo-grade sign-in. Credentials and demo access are
 configured through `.streamlit/secrets.toml` or the supported local environment
 variables. Generate password hashes with `python -m loanpilot.auth.make_hash`.
-Sign-in has no MFA or single sign-on and does not create persistent sessions.
+Sign-in persists across page refreshes for up to 7 days or until sign out. Set
+`auth.session_secret` (or `LOANPILOT_AUTH_SESSION_SECRET`) to a long random
+secret for stable sessions across app restarts and multiple instances. Sign-in
+has no MFA or single sign-on.
 
 Demonstration with synthetic data. Not a real bank system or credit decision.
 

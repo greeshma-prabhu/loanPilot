@@ -62,7 +62,7 @@
   {
     "component": "Sign-in (demo-grade credentials and demo access)",
     "status": "Real",
-    "note": "No MFA, no SSO, no persistent sessions"
+    "note": "No MFA or SSO; signed sessions expire after 7 days or on sign out."
   },
   {
     "component": "SSO and MFA",

@@ -313,7 +313,8 @@ def _render_decision_panel(
     """Render the pending-case form using case-specific stable widget keys."""
     st.subheader("Your decision")
     st.caption(
-        "Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed."
+        "Demo-grade sign-in: sessions persist for up to 7 days or until sign out; "
+        "there is no MFA or single sign-on."
     )
     action_key = f"review_action_{application_id}"
     reason_key = f"decision_reason_{application_id}"

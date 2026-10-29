@@ -7,6 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from loanpilot.auth.core import make_password_hash, verify_password
+from loanpilot.auth import session
 from loanpilot.config import PROJECT_ROOT
 from loanpilot.pages import login
 
@@ -30,7 +31,6 @@ def _login_app(users: list[dict[str, str]]) -> AppTest:
         "from loanpilot.pages import login\n"
         f"login.configured_users = lambda: {test_users!r}\n"
         "login.demo_access_enabled = lambda: True\n"
-        "login._go_to_overview = lambda: None\n"
         "login.render()\n"
     )
     return AppTest.from_string(script)
@@ -115,9 +115,11 @@ def test_sign_out_returns_to_login_page() -> None:
         "login.configured_users = lambda: []\n"
         "login.demo_access_enabled = lambda: True\n"
         "overview = st.Page(lambda: st.write('Overview'), title='Overview', default=True)\n"
-        "nav = st.navigation([overview, LOGIN_PAGE], position='hidden')\n"
+        "nav = st.navigation({'Operate': [overview], 'Access': [LOGIN_PAGE]}, position='hidden')\n"
         "if st.session_state.get('auth'):\n"
         "    st.button('Sign out', on_click=_sign_out, args=(LOGIN_PAGE,))\n"
+        "else:\n"
+        "    login.render()\n"
         "nav.run()\n"
     )
     app = AppTest.from_string(script)
@@ -129,6 +131,7 @@ def test_sign_out_returns_to_login_page() -> None:
     app.run()
     app.button[0].click().run()
     assert "auth" not in app.session_state
+    assert app.session_state["_auth_cookie_action"] == "delete"
     assert any(button.label == "Continue with demo access" for button in app.button)
 
 
@@ -144,6 +147,56 @@ def test_password_hash_cli_output_is_verifiable(monkeypatch, capsys) -> None:
     assert output.startswith('password_hash = "scrypt$')
     assert verify_password(_TEST_PASSWORD, encoded)
     assert _TEST_PASSWORD not in output
+
+
+def test_signed_session_token_survives_refresh_and_expires(monkeypatch) -> None:
+    """Signed sessions restore the configured identity until their seven-day expiry."""
+    user = {
+        "username": "greeshma",
+        "display_name": "Greeshma Prabhu",
+        "email": "Arambhbank@gmail.com",
+        "role": "Credit Analyst",
+        "password_hash": make_password_hash(_TEST_PASSWORD),
+    }
+    monkeypatch.setattr(session, "_signing_key", lambda: b"test session signing key")
+    monkeypatch.setattr(session, "configured_users", lambda: [user])
+    auth = {
+        "name": user["display_name"],
+        "email": user["email"],
+        "role": user["role"],
+        "method": "credentials",
+    }
+
+    token = session.create_session_token(auth, now=1_000)
+
+    assert session.restore_session_token(token, now=1_001) == auth
+    assert session.restore_session_token(
+        token, now=1_000 + session.SESSION_SECONDS
+    ) is None
+
+
+def test_signed_session_token_rejects_tampering_and_revoked_users(monkeypatch) -> None:
+    """Cookie edits and removed account credentials cannot restore a session."""
+    user = {
+        "username": "greeshma",
+        "display_name": "Greeshma Prabhu",
+        "email": "Arambhbank@gmail.com",
+        "role": "Credit Analyst",
+        "password_hash": make_password_hash(_TEST_PASSWORD),
+    }
+    monkeypatch.setattr(session, "_signing_key", lambda: b"test session signing key")
+    monkeypatch.setattr(session, "configured_users", lambda: [user])
+    auth = {
+        "name": user["display_name"],
+        "email": user["email"],
+        "role": user["role"],
+        "method": "credentials",
+    }
+    token = session.create_session_token(auth, now=1_000)
+
+    assert session.restore_session_token(token + "x", now=1_001) is None
+    monkeypatch.setattr(session, "configured_users", lambda: [])
+    assert session.restore_session_token(token, now=1_001) is None
 
 
 def test_repository_has_no_embedded_password_or_default_scrypt_hash() -> None:

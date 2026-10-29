@@ -606,25 +606,39 @@ _CSS = """
     [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] * {
         color: #34454c !important;
     }
-    [data-testid="stSidebar"] .st-key-sign_out {
-        position: fixed;
-        left: 16px;
-        bottom: 14px;
-        z-index: 1000;
-        width: 234px;
-        padding-top: 8px;
-        background: #fff;
+    [data-testid="stSidebar"] .st-key-sidebar-layout {
+        display: flex;
+        flex-direction: column;
+        min-height: calc(100vh - 7rem);
     }
-    [data-testid="stSidebar"] .st-key-sign_out button {
+    [data-testid="stSidebar"] .st-key-sidebar-nav {
+        flex: 0 0 auto;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-layout > div:has(.st-key-sidebar-sign-out-area) {
+        margin-top: auto;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area {
+        padding: .65rem;
+        border: 1px solid #b6d8d4;
+        border-radius: 14px;
+        background: #e9f4f3;
+        box-shadow: 0 5px 16px rgba(20, 59, 60, .08);
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button {
         width: 100%;
-        border: 1px solid #d7e0e3 !important;
+        border: 1px solid #0e756f !important;
         border-radius: 10px;
-        background: #fff !important;
-        color: #34454c !important;
+        background: linear-gradient(120deg, #168f87, #11766f) !important;
+        color: #fff !important;
+        font-weight: 700;
+        box-shadow: 0 3px 8px rgba(17, 118, 111, .18);
     }
-    [data-testid="stSidebar"] .st-key-sign_out button:hover {
-        border-color: #9fb3ad !important;
-        background: #f4f7f8 !important;
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button * {
+        color: #fff !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button:hover {
+        border-color: #0d625d !important;
+        background: linear-gradient(120deg, #11766f, #0d625d) !important;
     }
     .lp-eyebrow { color: #138b83 !important; }
     .lp-subtitle { color: #68777d !important; }

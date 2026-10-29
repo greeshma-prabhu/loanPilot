@@ -42,7 +42,8 @@ _FAQ = [
     ),
     (
         "How does sign-in work?",
-        "Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.",
+        "Demo-grade sign-in: sessions persist for up to 7 days or until sign out. "
+        "There is no MFA or single sign-on.",
     ),
 ]
 
@@ -138,7 +139,7 @@ def render() -> None:
             "- Bureau and KYC results are mock responses.\n"
             "- Policy thresholds and prices are illustrative demo settings.\n"
             "- Gemini is optional and cannot change deterministic outcomes.\n"
-            "- Demo-grade sign-in: no MFA or single sign-on; session ends when the browser page is refreshed.\n"
+            "- Demo-grade sign-in: sessions persist for up to 7 days or until sign out; there is no MFA or single sign-on.\n"
             "- Disbursement is simulated; generated PDFs contain synthetic content."
         )
         st.markdown("#### Illustrative turnaround inputs")

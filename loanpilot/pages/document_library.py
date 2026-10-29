@@ -13,6 +13,7 @@ from loanpilot.data.document_library import (
     DocumentLibraryError,
     delete_library_document,
     format_document_upload_time,
+    is_document_summary_current,
     list_library_documents,
     read_library_pdf,
     summarize_library_document,
@@ -73,17 +74,8 @@ def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
                 except DocumentLibraryError as error:
                     st.error(str(error))
                 else:
-                    st.success("Document uploaded.")
-                    st.caption(
-                        f"{document['original_filename']} · "
-                        f"{format_document_upload_time(document['uploaded_at'])}"
-                    )
                     if document["processing_status"] != "Processed":
                         st.warning(str(document["processing_error"]))
-                    elif document["summary_status"] == "Completed":
-                        st.caption("Document summary is ready in Overview → Latest Updates.")
-                    else:
-                        st.warning(str(document["summary_error"]))
 
 
 def _render_document_list(
@@ -117,9 +109,9 @@ def _render_document_list(
                 st.caption(str(document["processing_error"]))
             summary_status = str(document.get("summary_status", "Not requested"))
             if summary_status == "Failed":
-                st.caption(f"Summary failed · {document.get('summary_error', '')}")
+                st.caption("Summary unavailable. Review the PDF text or retry.")
             elif summary_status == "Processing":
-                st.caption("Summary processing is incomplete.")
+                st.caption("Summary is being prepared.")
             view_column, delete_column = st.columns(2)
             with view_column:
                 if st.button(
@@ -135,21 +127,26 @@ def _render_document_list(
                     width="stretch",
                 ):
                     st.session_state["library_delete_pending"] = document_id
-            if summary_status == "Failed" and document["processing_status"] == "Processed":
+            if document["processing_status"] == "Processed":
+                summary_action = (
+                    "Refresh summary"
+                    if not is_document_summary_current(document)
+                    and summary_status == "Completed"
+                    else "Retry summary"
+                    if summary_status == "Failed"
+                    else "Generate summary"
+                )
                 if st.button(
-                    "Retry summary",
+                    summary_action,
                     key=f"library_retry_summary_{document_id}",
                 ):
                     with st.spinner("Retrying document summary..."):
-                        updated = summarize_library_document(
+                        summarize_library_document(
                             document_id,
                             store,
                             retry=True,
                         )
-                    if updated["summary_status"] == "Completed":
-                        st.success("Document summary is ready in Overview → Latest Updates.")
-                    else:
-                        st.error(str(updated["summary_error"]))
+                    st.rerun()
 
     pending_id = st.session_state.get("library_delete_pending")
     pending = next(

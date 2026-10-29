@@ -62,12 +62,12 @@ def calculate_foir(
 def status_chip(text: str, kind: str = "neutral") -> str:
     """Return a text-labelled status chip using a consistent status palette."""
     styles = {
-        "neutral": ("#eef0f2", "#4b5563"),
-        "success": ("#e5f4e9", "#1f6b3b"),
-        "warning": ("#fff2d6", "#805400"),
-        "danger": ("#fde8e7", "#9d2f2a"),
-        "info": ("#e4f1f8", "#205b79"),
-        "demo": ("#e8f4f2", "#17665f"),
+        "neutral": ("#f0f3f5", "#4b6072"),
+        "success": ("#e4f4ec", "#216b4b"),
+        "warning": ("#fff4dd", "#805400"),
+        "danger": ("#fcebea", "#9d3b3b"),
+        "info": ("#e7f2f6", "#285b73"),
+        "demo": ("#e8f5f3", "#12645e"),
     }
     background, foreground = styles.get(kind, styles["neutral"])
     return (

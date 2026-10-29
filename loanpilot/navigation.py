@@ -9,6 +9,7 @@ from loanpilot.pages import (
     approach_story,
     data_explorer,
     document_library,
+    guided_demo,
     human_review,
     new_application,
     overview,
@@ -33,6 +34,11 @@ OPERATE_PAGES = {
         document_library.render,
         title="Document Library",
         url_path="document-library",
+    ),
+    "guided_demo": st.Page(
+        guided_demo.render,
+        title="Guided Demo",
+        url_path="guided-demo",
     ),
 }
 

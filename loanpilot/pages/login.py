@@ -4,8 +4,13 @@ import time
 
 import streamlit as st
 
-from loanpilot.auth import configured_users, demo_access_enabled, verify_password
-from loanpilot.theme import render_login_styles
+from loanpilot.auth import (
+    configured_users,
+    credential_configuration_error,
+    demo_access_enabled,
+    verify_password,
+)
+from loanpilot.theme import bank_logo_data_uri, render_login_styles
 
 
 def _show_forgot_password() -> None:
@@ -37,8 +42,8 @@ def _credential_sign_in() -> None:
             for candidate in configured_users()
             if username
             in {
-                candidate.get("display_name", "").casefold(),
-                candidate.get("email", "").casefold(),
+                candidate.get(identifier, "").strip().casefold()
+                for identifier in ("username", "display_name", "email")
             }
         ),
         None,
@@ -88,26 +93,29 @@ def render() -> None:
     """Render an isolated credential form with optional demo access."""
     render_login_styles()
     users = configured_users()
-    credentials_configured = any(
-        user.get("display_name")
-        and user.get("email")
-        and user.get("role")
-        and user.get("password_hash", "").startswith("scrypt$")
-        for user in users
-    )
+    configuration_error = credential_configuration_error()
+    credentials_configured = bool(users) and configuration_error is None
     with st.container(key="login-card"):
         st.markdown(
-            """
+            f"""
             <div class="lp-login-brand">
-              <span class="lp-login-brand-name">LoanPilot</span>
-              <span class="lp-login-brand-divider">·</span>
-              <span class="lp-login-bank-name">Aarambh Bank</span>
+              <img src="{bank_logo_data_uri()}" alt="" aria-hidden="true">
+              <div class="lp-login-brand-copy">
+                <span class="lp-login-bank-name">Aarambh Bank</span>
+                <span class="lp-login-product-name">LoanPilot</span>
+                <span class="lp-login-tagline">AI-Powered Lending Assistant</span>
+              </div>
             </div>
             <h1 class="lp-login-title">Welcome back</h1>
             <p class="lp-login-subtitle">Sign in to your intelligent lending workspace.</p>
             """,
             unsafe_allow_html=True,
         )
+        if configuration_error:
+            st.warning(
+                "Username/password sign-in is unavailable. Check the "
+                "[auth.users.<username>] configuration in Streamlit secrets."
+            )
         if st.session_state.get("login_error"):
             st.error(st.session_state["login_error"])
         locked = time.time() < float(st.session_state.get("auth_locked_until", 0))

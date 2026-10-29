@@ -1,0 +1,451 @@
+"""Isolated, synthetic walkthrough of the LoanPilot personal-loan journey."""
+
+import math
+import time
+from typing import Any
+
+import streamlit as st
+
+from loanpilot.agent.policy_engine import (
+    evaluate_policy,
+    max_affordable_amount,
+    pricing_rate,
+)
+from loanpilot.agent.sanction import reducing_balance_emi
+from loanpilot.components import calculate_foir, fmt_inr, status_chip
+from loanpilot.theme import render_disclaimer, render_header
+
+ASSESSMENT_WAIT_SECONDS = 5
+STAGES = (
+    "Application Submission",
+    "AI Assessment",
+    "Human Review",
+    "Final Decision",
+)
+APPLICANT = {
+    "name": "Priya Menon",
+    "employment": "Salaried",
+    "monthly_income": 75_000,
+    "existing_emi": 10_000,
+    "requested_amount": 300_000,
+    "tenure_months": 36,
+    "purpose": "Travel",
+    "credit_score": 742,
+}
+_STATE_KEYS = (
+    "guided_demo_started",
+    "guided_demo_step",
+    "guided_demo_assessment_started_at",
+    "guided_demo_assessment_ready",
+    "guided_demo_reviewer_outcome",
+    "guided_demo_reviewer_rationale",
+)
+
+
+def _assessment_results() -> dict[str, Any]:
+    """Calculate synthetic affordability and policy signals without persistence."""
+    rate = pricing_rate(APPLICANT["credit_score"])
+    if rate is None:
+        raise RuntimeError("The configured policy has no rate for the demo score.")
+    emi = reducing_balance_emi(
+        APPLICANT["requested_amount"], rate, APPLICANT["tenure_months"]
+    )
+    foir = calculate_foir(
+        APPLICANT["existing_emi"], emi, APPLICANT["monthly_income"]
+    )
+    if foir is None:
+        raise RuntimeError("The synthetic income must be positive for FOIR.")
+
+    features = {
+        "age": 32,
+        "current_tenure_months": 36,
+        "total_experience_months": 120,
+        "net_monthly_income": APPLICANT["monthly_income"],
+        "requested_amount": APPLICANT["requested_amount"],
+        "tenure_months": APPLICANT["tenure_months"],
+    }
+    reconciliation = {
+        "payslip_arithmetic_matches": True,
+        "salary_credits_within_tolerance": True,
+        "employer_matches": True,
+        "salary_credit_variance_pct": 0.0,
+    }
+    bureau = {
+        "score": APPLICANT["credit_score"],
+        "thin_file": False,
+        "max_dpd_24m": 0,
+        "enquiries_6m": 1,
+    }
+    policy = evaluate_policy(
+        features=features,
+        extracted={"net": APPLICANT["monthly_income"]},
+        reconciliation=reconciliation,
+        bureau=bureau,
+        kyc={"status": "verified", "pan_status": "verified", "name_match": 0.98},
+        finances={"foir_stated": foir, "foir_verified": foir},
+    )
+    affordable = max_affordable_amount(
+        APPLICANT["monthly_income"],
+        APPLICANT["existing_emi"],
+        rate,
+        APPLICANT["tenure_months"],
+    )
+    illustrative_limit = math.floor(affordable / 1000) * 1000
+    return {
+        "rate": rate,
+        "emi": emi,
+        "foir": foir,
+        "affordable_amount": illustrative_limit,
+        "policy": policy,
+    }
+
+
+def _assessment_remaining_seconds(
+    started_at: float, *, now: float | None = None
+) -> float:
+    """Return the remaining simulated assessment delay, clamped to its duration."""
+    current_time = time.time() if now is None else now
+    elapsed = max(0.0, current_time - started_at)
+    return max(0.0, ASSESSMENT_WAIT_SECONDS - elapsed)
+
+
+def _start_demo() -> None:
+    """Start a fresh walkthrough in transient Streamlit session state."""
+    st.session_state["guided_demo_started"] = True
+    st.session_state["guided_demo_step"] = 0
+    st.session_state["guided_demo_assessment_ready"] = False
+    st.session_state.pop("guided_demo_assessment_started_at", None)
+    st.session_state.pop("guided_demo_reviewer_outcome", None)
+    st.session_state.pop("guided_demo_reviewer_rationale", None)
+
+
+def _go_to_step(step: int) -> None:
+    """Move through the local journey, starting the assessment timer on entry."""
+    st.session_state["guided_demo_step"] = step
+    if step == 1 and not st.session_state.get("guided_demo_assessment_ready"):
+        st.session_state.setdefault(
+            "guided_demo_assessment_started_at", time.time()
+        )
+
+
+def _restart_demo() -> None:
+    """Clear only this walkthrough's transient state."""
+    for key in _STATE_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _render_journey(current_step: int | None) -> None:
+    """Show the four stages and mark completed/current journey progress."""
+    with st.container(key="guided-demo-journey"):
+        columns = st.columns(4)
+        for index, (column, stage) in enumerate(zip(columns, STAGES)):
+            if current_step is None:
+                kind, label = "neutral", f"{index + 1}. {stage}"
+            elif index < current_step:
+                kind, label = "success", f"✓  {stage}"
+            elif index == current_step:
+                kind, label = "info", f"{index + 1}. {stage}"
+            else:
+                kind, label = "neutral", f"{index + 1}. {stage}"
+            with column:
+                st.markdown(status_chip(label, kind), unsafe_allow_html=True)
+
+
+def _render_submission() -> None:
+    """Render the synthetic applicant details and intake checklist."""
+    st.subheader("Application Submission")
+    st.caption("Application captured and validated before assessment.")
+    with st.container(border=True):
+        st.markdown(f"### {APPLICANT['name']}")
+        details = st.columns(3)
+        details[0].metric("Employment", APPLICANT["employment"])
+        details[1].metric("Monthly net income", fmt_inr(APPLICANT["monthly_income"]))
+        details[2].metric("Existing monthly EMI", fmt_inr(APPLICANT["existing_emi"]))
+        details = st.columns(3)
+        details[0].metric("Requested amount", fmt_inr(APPLICANT["requested_amount"]))
+        details[1].metric("Tenure", f"{APPLICANT['tenure_months']} months")
+        details[2].metric("Loan purpose", APPLICANT["purpose"])
+        st.markdown("**Document checklist**")
+        st.write(
+            "✓ Identity and address documents · ✓ Recent payslips · "
+            "✓ Bank statements — available and consistent (synthetic)"
+        )
+    with st.expander("What happens in this step?"):
+        st.write(
+            "The applicant’s details and supporting documents are captured, "
+            "checked for completeness, and prepared for assessment."
+        )
+
+
+def _render_assessment_wait() -> None:
+    """Poll the simulated five-second assessment without blocking the app."""
+    started_at = float(st.session_state["guided_demo_assessment_started_at"])
+
+    @st.fragment(run_every=1)
+    def wait_for_assessment() -> None:
+        remaining = _assessment_remaining_seconds(started_at)
+        progress = 1 - remaining / ASSESSMENT_WAIT_SECONDS
+        st.progress(progress, text="Preparing the illustrative assessment...")
+        if remaining > 0:
+            st.caption(
+                "Checking repayment capacity, synthetic document consistency, "
+                "and the local illustrative policy."
+            )
+        else:
+            st.session_state["guided_demo_assessment_ready"] = True
+            st.rerun()
+
+    wait_for_assessment()
+
+
+def _render_assessment() -> None:
+    """Render the assessment wait, then the policy and repayment results."""
+    st.subheader("AI Assessment")
+    if not st.session_state.get("guided_demo_assessment_ready"):
+        _render_assessment_wait()
+        return
+
+    results = _assessment_results()
+    policy = results["policy"]
+    columns = st.columns(3)
+    columns[0].metric("Proposed monthly EMI", fmt_inr(results["emi"]))
+    columns[1].metric("FOIR", f"{results['foir']:.1%}")
+    columns[2].metric("Illustrative policy rate", f"{results['rate']:.1%} p.a.")
+    st.markdown("**Illustrative checks**")
+    for label, detail in (
+        ("Income and repayment capacity", "Income supports the proposed repayment."),
+        ("Documents", "Synthetic documents are available and consistent."),
+        (
+            "Credit information",
+            f"Synthetic credit score: {APPLICANT['credit_score']}; "
+            "no bureau provider was contacted.",
+        ),
+    ):
+        st.markdown(f"- **{label}:** {detail}")
+    for clause in policy["clauses"]:
+        status = str(clause["status"])
+        kind = {"pass": "success", "refer": "warning", "decline": "danger"}.get(
+            status, "neutral"
+        )
+        st.markdown(
+            f"- {clause['rule_text']} "
+            + status_chip(status.title(), kind),
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        "**Illustrative AI recommendation:** "
+        + status_chip(
+            policy["recommendation"],
+            "success" if policy["recommendation"] == "Approve" else "warning",
+        ),
+        unsafe_allow_html=True,
+    )
+    with st.expander("What happens in this step?"):
+        st.write(
+            "LoanPilot compares the supplied evidence with affordability and "
+            "configured policy rules. This demo uses synthetic information and "
+            "does not call an external credit bureau, KYC provider, or banking API."
+        )
+
+
+def _render_human_review() -> None:
+    """Let the user simulate reviewer agreement or an explained override."""
+    st.subheader("Human Review")
+    results = _assessment_results()
+    st.markdown("**Evidence available to the reviewer**")
+    st.write(
+        f"Income {fmt_inr(APPLICANT['monthly_income'])} · "
+        f"proposed EMI {fmt_inr(results['emi'])} · FOIR {results['foir']:.1%} · "
+        "consistent synthetic documents · synthetic credit score 742"
+    )
+    st.markdown(
+        "**AI recommendation:** "
+        + status_chip(results["policy"]["recommendation"], "success"),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "A reviewer considers the evidence and may agree or override, subject to "
+        "configured policy and a recorded rationale."
+    )
+    st.radio(
+        "Simulated reviewer action",
+        (
+            "Agree with AI recommendation",
+            "Override: Refer for additional review",
+            "Override: Decline",
+        ),
+        key="guided_demo_reviewer_outcome",
+    )
+    outcome = st.session_state.get(
+        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
+    )
+    if outcome != "Agree with AI recommendation":
+        st.text_area(
+            "Override rationale (required)",
+            key="guided_demo_reviewer_rationale",
+            max_chars=500,
+            help="This rationale is kept only in the current demo session.",
+        )
+    with st.expander("What happens in this step?"):
+        st.write(
+            "A human reviewer checks the evidence and recommendation. In the "
+            "real workflow, any override must meet policy controls and include "
+            "a documented reason."
+        )
+
+
+def _reviewer_override_is_valid() -> bool:
+    """Require a rationale before the simulated reviewer can override."""
+    outcome = st.session_state.get(
+        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
+    )
+    return (
+        outcome == "Agree with AI recommendation"
+        or bool(str(st.session_state.get("guided_demo_reviewer_rationale", "")).strip())
+    )
+
+
+def _render_decision() -> None:
+    """Show the simulated final outcome and explicitly non-binding next steps."""
+    st.subheader("Final Decision")
+    results = _assessment_results()
+    reviewer_outcome = st.session_state.get(
+        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
+    )
+    if reviewer_outcome == "Agree with AI recommendation":
+        title = "Approved – Illustrative Demo"
+        approved_amount = min(
+            APPLICANT["requested_amount"], results["affordable_amount"]
+        )
+        rationale = (
+            "The synthetic profile meets the illustrative affordability, "
+            "document, and policy checks; the reviewer agreed with the AI recommendation."
+        )
+        kind = "success"
+    elif reviewer_outcome == "Override: Refer for additional review":
+        title = "Referred – Illustrative Demo"
+        approved_amount = None
+        rationale = str(st.session_state["guided_demo_reviewer_rationale"]).strip()
+        kind = "warning"
+    else:
+        title = "Declined – Illustrative Demo"
+        approved_amount = None
+        rationale = str(st.session_state["guided_demo_reviewer_rationale"]).strip()
+        kind = "danger"
+
+    st.markdown(status_chip(title, kind), unsafe_allow_html=True)
+    columns = st.columns(3)
+    columns[0].metric("Requested amount", fmt_inr(APPLICANT["requested_amount"]))
+    columns[1].metric(
+        "Illustrative approved amount",
+        fmt_inr(approved_amount) if approved_amount is not None else "Not approved",
+    )
+    columns[2].metric(
+        "Tenure / rate",
+        f"{APPLICANT['tenure_months']} months · {results['rate']:.1%} p.a.",
+    )
+    st.metric("Estimated monthly EMI", fmt_inr(results["emi"]))
+    st.markdown("**Decision rationale**")
+    st.write(rationale)
+    st.markdown("**Illustrative next steps**")
+    st.write(
+        "Complete sanction documentation and authorized verification, then "
+        "perform applicable disbursement checks. No sanction or disbursement "
+        "takes place in this demo."
+    )
+    st.info(
+        "This is a simulated result using synthetic applicant data, not a real "
+        "loan sanction or disbursement."
+    )
+    with st.expander("What happens in this step?"):
+        st.write(
+            "A production decision proceeds only through the institution’s "
+            "authorized approval, documentation, and disbursement controls."
+        )
+
+
+def render() -> None:
+    """Render the session-only guided lending journey."""
+    render_disclaimer()
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 640px) {
+            .st-key-guided-demo-journey [data-testid="stHorizontalBlock"],
+            .st-key-guided-demo-controls [data-testid="stHorizontalBlock"] {
+                flex-direction: column !important;
+                gap: .35rem !important;
+            }
+            .st-key-guided-demo-journey [data-testid="stColumn"],
+            .st-key-guided-demo-controls [data-testid="stColumn"] {
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                flex: 1 1 100% !important;
+            }
+            .st-key-guided-demo-controls button {
+                width: 100% !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_header(
+        "Guided Loan Journey",
+        "Explore how a personal-loan application moves from submission to the final decision.",
+    )
+    st.info(
+        "Illustrative demo using synthetic applicant data. "
+        "No real loan decision or money movement occurs."
+    )
+    started = bool(st.session_state.get("guided_demo_started"))
+    current_step = int(st.session_state.get("guided_demo_step", 0)) if started else None
+    _render_journey(current_step)
+
+    if not started:
+        st.button(
+            "Start Guided Demo",
+            key="guided_demo_start",
+            type="primary",
+            on_click=_start_demo,
+        )
+        return
+
+    st.caption(f"Step {current_step + 1} of {len(STAGES)}")
+    if current_step == 0:
+        _render_submission()
+    elif current_step == 1:
+        _render_assessment()
+    elif current_step == 2:
+        _render_human_review()
+    else:
+        _render_decision()
+
+    st.divider()
+    is_waiting = current_step == 1 and not st.session_state.get(
+        "guided_demo_assessment_ready"
+    )
+    override_invalid = current_step == 2 and not _reviewer_override_is_valid()
+    with st.container(key="guided-demo-controls"):
+        controls = st.columns(3)
+        controls[0].button(
+            "Previous Step",
+            key="guided_demo_previous",
+            disabled=current_step == 0,
+            on_click=_go_to_step,
+            args=(max(0, current_step - 1),),
+        )
+        controls[1].button(
+            "Next Step",
+            key="guided_demo_next",
+            type="primary",
+            disabled=current_step == len(STAGES) - 1 or is_waiting or override_invalid,
+            on_click=_go_to_step,
+            args=(min(len(STAGES) - 1, current_step + 1),),
+        )
+        controls[2].button(
+            "Restart Demo",
+            key="guided_demo_restart",
+            on_click=_restart_demo,
+        )

@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from loanpilot.auth.core import make_password_hash, verify_password
+from loanpilot.auth import core as auth_core
+from loanpilot.auth.core import (
+    is_valid_password_hash,
+    make_password_hash,
+    verify_password,
+)
 from loanpilot.auth import session
 from loanpilot.config import PROJECT_ROOT
 from loanpilot.pages import login
@@ -30,6 +35,7 @@ def _login_app(users: list[dict[str, str]]) -> AppTest:
         "import streamlit as st\n"
         "from loanpilot.pages import login\n"
         f"login.configured_users = lambda: {test_users!r}\n"
+        "login.credential_configuration_error = lambda: None\n"
         "login.demo_access_enabled = lambda: True\n"
         "login.render()\n"
     )
@@ -51,12 +57,34 @@ def test_credentials_accept_display_name_and_email(username: str) -> None:
     }
 
 
+def test_credentials_accept_configured_username() -> None:
+    """The username key in [auth.users.<username>] is a valid sign-in identifier."""
+    app = _login_app([]).run()
+    app.text_input(key="login_username").set_value(" GREESHMA ")
+    app.text_input(key="login_password").set_value(_TEST_PASSWORD)
+    next(button for button in app.button if button.label == "Sign in").click().run()
+    assert app.session_state["auth"]["method"] == "credentials"
+
+
 def test_wrong_password_uses_generic_error() -> None:
     """The login error never identifies whether the name or password was wrong."""
     app = _login_app([]).run()
     app.text_input(key="login_username").set_value("Greeshma Prabhu")
     app.text_input(key="login_password").set_value("incorrect")
     next(button for button in app.button if button.label == "Sign in").click().run()
+    assert [item.value for item in app.error] == [
+        "Incorrect email, username or password"
+    ]
+    assert "auth" not in app.session_state
+
+
+def test_unknown_username_uses_generic_error() -> None:
+    """Unknown identifiers receive the same generic response as wrong passwords."""
+    app = _login_app([]).run()
+    app.text_input(key="login_username").set_value("unknown-user")
+    app.text_input(key="login_password").set_value(_TEST_PASSWORD)
+    next(button for button in app.button if button.label == "Sign in").click().run()
+
     assert [item.value for item in app.error] == [
         "Incorrect email, username or password"
     ]
@@ -88,22 +116,69 @@ def test_demo_access_sets_guest_identity() -> None:
     }
 
 
-def test_no_configured_user_disables_credentials_without_extra_notice(
+def test_no_configured_user_disables_credentials_with_safe_setup_notice(
     monkeypatch,
 ) -> None:
-    """The no-secrets state omits setup messaging and retains demo access."""
+    """Missing credentials show a safe setup hint and retain demo access."""
     monkeypatch.setattr(login, "configured_users", lambda: [])
+    monkeypatch.setattr(
+        login,
+        "credential_configuration_error",
+        lambda: "No username/password users are configured.",
+    )
     monkeypatch.setattr(login, "demo_access_enabled", lambda: True)
     app = AppTest.from_string(
         "from loanpilot.pages.login import render\nrender()\n"
     ).run()
-    assert not app.info
+    assert any("Streamlit secrets" in item.value for item in app.warning)
     assert app.text_input(key="login_username").disabled
     assert app.text_input(key="login_password").disabled
     assert next(button for button in app.button if button.label == "Sign in").disabled
     assert any(button.label == "Continue with demo access" for button in app.button)
     assert not any(button.label == "Contact" for button in app.button)
     assert not app.exception
+
+
+def test_missing_credentials_have_a_distinct_configuration_error(monkeypatch) -> None:
+    """Missing auth setup is distinct from an incorrect password."""
+    monkeypatch.setattr(auth_core, "_read_auth_secrets", lambda: ({}, None))
+    monkeypatch.delenv("LOANPILOT_AUTH_USERS", raising=False)
+
+    assert auth_core.configured_users() == []
+    assert auth_core.credential_configuration_error() == (
+        "No username/password users are configured."
+    )
+
+
+def test_malformed_password_hash_is_reported_as_configuration_error(
+    monkeypatch,
+) -> None:
+    """Malformed scrypt values are never presented as ordinary bad credentials."""
+    monkeypatch.setattr(
+        auth_core,
+        "_read_auth_secrets",
+        lambda: (
+            {
+                "users": {
+                    "analyst": {
+                        "display_name": "Test Analyst",
+                        "email": "analyst@example.test",
+                        "role": "Credit Analyst",
+                        "password_hash": "scrypt$not-a-salt$not-a-digest",
+                    }
+                }
+            },
+            None,
+        ),
+    )
+    monkeypatch.delenv("LOANPILOT_AUTH_USERS", raising=False)
+
+    assert auth_core.configured_users() == []
+    assert auth_core.credential_configuration_error() == (
+        "A configured auth password hash is malformed."
+    )
+    assert not is_valid_password_hash("scrypt$not-a-salt$not-a-digest")
+    assert not verify_password(_TEST_PASSWORD, "scrypt$not-a-salt$not-a-digest")
 
 
 def test_sign_out_returns_to_login_page() -> None:
@@ -197,6 +272,47 @@ def test_signed_session_token_rejects_tampering_and_revoked_users(monkeypatch) -
     assert session.restore_session_token(token + "x", now=1_001) is None
     monkeypatch.setattr(session, "configured_users", lambda: [])
     assert session.restore_session_token(token, now=1_001) is None
+
+
+def test_cookie_gate_restores_identity_after_refresh_and_navigation() -> None:
+    """The app cookie gate restores identity after session state is recreated."""
+    script = (
+        "import streamlit as st\n"
+        "from app import _sync_auth_cookie\n"
+        "from loanpilot.auth import session\n"
+        "session.demo_access_enabled = lambda: True\n"
+        "class FakeCookieManager:\n"
+        "    def __init__(self):\n"
+        "        self.cookies = st.session_state.setdefault('browser_cookies', {})\n"
+        "    def get(self, name):\n"
+        "        return self.cookies.get(name)\n"
+        "    def set(self, name, value, **kwargs):\n"
+        "        self.cookies[name] = value\n"
+        "    def delete(self, name, **kwargs):\n"
+        "        self.cookies.pop(name, None)\n"
+        "manager = FakeCookieManager()\n"
+        "_sync_auth_cookie(manager, request_cookies=dict(manager.cookies), request_url='https://loanpilot.test')\n"
+        "def sign_in():\n"
+        "    st.session_state['auth'] = {'name': 'Demo Analyst', 'role': 'Guest (demo)', 'method': 'demo'}\n"
+        "    st.session_state['_auth_cookie_action'] = 'set'\n"
+        "if st.session_state.get('auth'):\n"
+        "    st.selectbox('Page', ['Overview', 'Applications'], key='test_page')\n"
+        "    st.write(st.session_state['auth']['name'])\n"
+        "else:\n"
+        "    st.button('Sign in', on_click=sign_in)\n"
+    )
+    app = AppTest.from_string(script).run()
+    app.button[0].click().run()
+    assert app.session_state["auth"]["name"] == "Demo Analyst"
+    assert app.session_state["browser_cookies"]
+
+    app.selectbox(key="test_page").select("Applications").run()
+    assert app.session_state["auth"]["name"] == "Demo Analyst"
+
+    # A browser refresh creates fresh Streamlit session state but sends its cookie.
+    del app.session_state["auth"]
+    app.run()
+    assert app.session_state["auth"]["name"] == "Demo Analyst"
 
 
 def test_repository_has_no_embedded_password_or_default_scrypt_hash() -> None:

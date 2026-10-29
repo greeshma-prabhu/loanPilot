@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS raw_library_documents (
     processing_error TEXT NOT NULL DEFAULT '',
     summary_status TEXT NOT NULL DEFAULT 'Not requested',
     summary_method TEXT NOT NULL DEFAULT '',
+    summary_version INTEGER NOT NULL DEFAULT 0,
     summary_headline TEXT NOT NULL DEFAULT '',
     summary_text TEXT NOT NULL DEFAULT '',
     summary_error TEXT NOT NULL DEFAULT ''
@@ -302,6 +303,7 @@ def create_schema(store: SQLiteStore) -> None:
         for column, definition in (
             ("summary_status", "TEXT NOT NULL DEFAULT 'Not requested'"),
             ("summary_method", "TEXT NOT NULL DEFAULT ''"),
+            ("summary_version", "INTEGER NOT NULL DEFAULT 0"),
             ("summary_headline", "TEXT NOT NULL DEFAULT ''"),
             ("summary_text", "TEXT NOT NULL DEFAULT ''"),
             ("summary_error", "TEXT NOT NULL DEFAULT ''"),

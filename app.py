@@ -14,15 +14,25 @@ from loanpilot.auth.session import (
 )
 from loanpilot.pages import login
 from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION, OPERATE_PAGES
+from loanpilot.theme import render_active_navigation_style, render_sidebar_brand
 
 LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
 
 
-def _sync_auth_cookie(cookie_manager) -> None:
+def _sync_auth_cookie(
+    cookie_manager,
+    *,
+    request_cookies=None,
+    request_url: str | None = None,
+) -> None:
     """Persist explicit sign-in and restore authenticated identity after refresh."""
     action = st.session_state.pop("_auth_cookie_action", None)
-    secure_cookie = str(getattr(st.context, "url", "")).startswith("https://")
+    context = st.context
+    if request_cookies is None:
+        request_cookies = getattr(context, "cookies", {})
     if action == "set" and st.session_state.get("auth"):
+        current_url = request_url or str(getattr(context, "url", ""))
+        secure_cookie = current_url.startswith("https://")
         cookie_manager.set(
             AUTH_COOKIE_NAME,
             create_session_token(st.session_state["auth"]),
@@ -41,7 +51,12 @@ def _sync_auth_cookie(cookie_manager) -> None:
     if st.session_state.get("auth"):
         return
 
-    token = st.context.cookies.get(AUTH_COOKIE_NAME)
+    # st.context.cookies is populated from the HTTP request and is authoritative
+    # after refresh. CookieManager's component value is a compatibility fallback
+    # for Streamlit releases where request cookies are not exposed consistently.
+    token = request_cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        token = cookie_manager.get(AUTH_COOKIE_NAME)
     if token:
         restored = restore_session_token(str(token))
         if restored:
@@ -67,7 +82,7 @@ def main() -> None:
     """Gate all product navigation behind a session-level sign-in."""
     st.set_page_config(
         page_title=config.APP_NAME,
-        page_icon="🏦",
+        page_icon=str(config.BANK_LOGO_PATH),
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -89,24 +104,35 @@ def main() -> None:
     create_schema(store)
 
     with st.sidebar:
+        render_active_navigation_style(navigation.url_path)
         with st.container(key="sidebar-layout"):
             with st.container(key="sidebar-nav"):
-                st.markdown(
-                    '<div class="lp-sidebar-brand">LoanPilot'
-                    f'<span>{config.BANK_NAME}</span></div>',
-                    unsafe_allow_html=True,
-                )
-                for key in OPERATE_PAGES:
-                    st.page_link(OPERATE_PAGES[key])
+                render_sidebar_brand(config.BANK_NAME)
+                page_icons = {
+                    "overview": ":material/space_dashboard:",
+                    "applications": ":material/folder_open:",
+                    "new_application": ":material/add_circle:",
+                    "ai_assessment": ":material/psychology:",
+                    "human_review": ":material/rate_review:",
+                    "document_library": ":material/description:",
+                    "guided_demo": ":material/play_circle:",
+                }
+                for key, page in OPERATE_PAGES.items():
+                    st.page_link(page, icon=page_icons[key])
             with st.container(key="sidebar-sign-out-area"):
                 with st.expander("Know More", expanded=False):
-                    for key, label in (
-                        ("approach_story", "Approach Story"),
-                        ("technical_architecture", "Technical Architecture"),
-                        ("data_explorer", "Data Explorer"),
-                        ("about_faq", "About & FAQ"),
-                    ):
-                        st.page_link(KNOW_MORE_PAGES[key], label=label)
+                    know_more = (
+                        ("approach_story", "Approach Story", ":material/lightbulb:"),
+                        (
+                            "technical_architecture",
+                            "Technical Architecture",
+                            ":material/account_tree:",
+                        ),
+                        ("data_explorer", "Data Explorer", ":material/query_stats:"),
+                        ("about_faq", "About & FAQ", ":material/info:"),
+                    )
+                    for key, label, icon in know_more:
+                        st.page_link(KNOW_MORE_PAGES[key], label=label, icon=icon)
                 st.button(
                     "Sign out",
                     key="sign_out",

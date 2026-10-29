@@ -38,7 +38,7 @@ from loanpilot.data.queries import (
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.theme import render_disclaimer
+from loanpilot.theme import render_disclaimer, render_header
 
 ACTIONS = {
     "approve": "Approve",
@@ -679,7 +679,11 @@ def render(store: SQLiteStore | None = None) -> None:
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
-    st.title("Review queue")
+    render_header(
+        "Review queue",
+        "Human Review · assess open cases and record final human decisions.",
+        "OPERATE  /  HUMAN REVIEW",
+    )
     cases, active_filter = _render_queue_filters(store)
     if cases.empty:
         if active_filter == "Pending":

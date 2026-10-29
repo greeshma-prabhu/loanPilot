@@ -1,9 +1,11 @@
 """Static checks for shared LoanPilot page conventions."""
 
 import ast
+from base64 import b64decode
 import re
 
-from loanpilot.config import PROJECT_ROOT
+from loanpilot.config import BANK_LOGO_PATH, PROJECT_ROOT
+from loanpilot.theme import bank_logo_data_uri
 
 PAGES_DIR = PROJECT_ROOT / "loanpilot" / "pages"
 _ABSOLUTE_PATH = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|/(?:Users|home|tmp|var|etc|opt)/)")
@@ -57,3 +59,12 @@ def test_pages_do_not_write_raw_mapping_or_sequence_values() -> None:
             assert not (
                 isinstance(value, ast.Name) and value.id in collection_names
             ), path.name
+
+
+def test_bank_logo_is_a_bundled_transparent_svg() -> None:
+    """Keep the sidebar and login mark local, crisp, and free of external URLs."""
+    assert BANK_LOGO_PATH.is_file()
+    svg = b64decode(bank_logo_data_uri().split(",", 1)[1]).decode("utf-8")
+    assert "<svg" in svg
+    assert 'viewBox="0 0 48 48"' in svg
+    assert "https://" not in svg

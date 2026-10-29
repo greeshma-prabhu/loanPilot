@@ -143,11 +143,15 @@ def _render_application_table(frame: pd.DataFrame) -> None:
     )
 
 
-def _render_empty_state() -> None:
+def _render_empty_state(*, include_header: bool = True) -> None:
     """Offer the first-party application workflow without synthetic records."""
     from loanpilot.navigation import OPERATE_PAGES
 
-    render_header("Applications", "Review applications submitted through LoanPilot.")
+    if include_header:
+        render_header(
+            "Applications",
+            "Review applications submitted through LoanPilot.",
+        )
     st.info("No applications have been submitted yet.")
     st.page_link(
         OPERATE_PAGES["new_application"],
@@ -179,7 +183,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
     )
     all_rows = list_applications({"user_created_only": True}, store)
     if all_rows.empty:
-        _render_empty_state()
+        _render_empty_state(include_header=False)
         return
 
     stage_options = ["All", *sorted(all_rows["stage"].dropna().unique().tolist())]

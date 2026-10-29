@@ -7,9 +7,11 @@ import math
 from pathlib import Path
 import re
 import sqlite3
+import unicodedata
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from loanpilot.agent.llm import GeminiUnavailableError, generate_json_with_gemini
+from loanpilot.agent.llm import generate_json_with_gemini
 from loanpilot.config import DOCUMENT_LIBRARY_DIR
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
@@ -19,7 +21,25 @@ MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 200
 MAX_EXTRACTED_TEXT_CHARS = 500_000
 MAX_SEARCH_CANDIDATES = 100
+SUMMARY_VERSION = 2
 _DOCUMENT_ID = re.compile(r"[0-9a-f]{32}\Z")
+_PAGE_NUMBER = re.compile(r"^(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?$", re.IGNORECASE)
+_DOCUMENT_METADATA = re.compile(
+    r"^(?:document\s*(?:id|no\.?|number)|version|revision)\s*[:#-]",
+    re.IGNORECASE,
+)
+_DEMO_BOILERPLATE = re.compile(
+    r"\b(?:fictional|synthetic)\s+(?:demo|demonstration)\s+"
+    r"(?:document|sample|policy)\b|\bfor\s+demonstration\s+only\b",
+    re.IGNORECASE,
+)
+_LEGACY_SUMMARY_MARKERS = re.compile(
+    r"\b(?:page\s+\d+|version\s*[:#]?\s*[\w.]+|document\s*(?:id|no\.?|number)"
+    r"|fictional\s+demo|synthetic\s+material|important\s+demo\s+notice"
+    r"|document\s+owner)\b",
+    re.IGNORECASE,
+)
+_DECORATIVE_LINE = re.compile(r"^[\W_]+$", re.UNICODE)
 _SEARCH_STOP_WORDS = {
     "and", "are", "for", "from", "has", "have", "into", "loan", "not",
     "our", "the", "this", "that", "their", "was", "with", "you",
@@ -45,8 +65,93 @@ class DocumentNotFoundError(DocumentLibraryError):
     """A requested library document no longer exists."""
 
 
+def clean_pdf_text(text: str) -> str:
+    """Remove extraction artifacts, repeated page furniture, and non-content lines."""
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = (
+        normalized.replace("\ufffd", " ")
+        .replace("\u00ad", "")
+        .replace("\u200b", "")
+        .replace("\ufeff", "")
+    )
+    normalized = normalized.translate(
+        str.maketrans(
+            {
+                "\u2018": "'",
+                "\u2019": "'",
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2013": "-",
+                "\u2014": "-",
+                "\u2022": " ",
+                "\u25a0": " ",
+                "\u25aa": " ",
+            }
+        )
+    )
+    lines = []
+    for raw_line in normalized.splitlines():
+        line = "".join(
+            character
+            for character in raw_line
+            if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+        )
+        line = re.sub(r"\s+", " ", line).strip(" \t|•·-_")
+        if not line or _PAGE_NUMBER.fullmatch(line) or _DECORATIVE_LINE.fullmatch(line):
+            continue
+        folded = line.casefold()
+        if _DOCUMENT_METADATA.match(line) or _DEMO_BOILERPLATE.search(line):
+            continue
+        if folded in {"loanpilot", "aarambh bank"}:
+            continue
+        if (
+            ("loanpilot" in folded or "aarambh bank" in folded)
+            and len(line) < 120
+            and not re.search(r"\b(?:requires?|must|shall|should|eligible|review|verify)\b", folded)
+        ):
+            continue
+        lines.append(line)
+
+    normalized_lines = [re.sub(r"\W+", " ", line.casefold()).strip() for line in lines]
+    seen = set()
+    cleaned = []
+    for line, key in zip(lines, normalized_lines, strict=True):
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+def is_document_summary_current(document: dict[str, object]) -> bool:
+    """Reject old versions and summaries that still resemble raw PDF text."""
+    if str(document.get("summary_status", "")) != "Completed":
+        return False
+    if int(document.get("summary_version") or 0) < SUMMARY_VERSION:
+        return False
+    summary = str(document.get("summary_text") or "").strip()
+    headline = str(document.get("summary_headline") or "").strip()
+    combined = f"{headline}\n{summary}"
+    if not summary or not headline or _LEGACY_SUMMARY_MARKERS.search(combined):
+        return False
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        and not character.isspace()
+        for character in combined
+    ):
+        return False
+    words = re.findall(r"\b[\w'-]+\b", summary)
+    sentences = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", summary)
+        if sentence.strip()
+    ]
+    return len(words) <= 160 and 1 <= len(sentences) <= 4
+
+
 def _extractive_summary(text: str) -> tuple[str, str] | None:
     """Choose representative, informative source sentences without adding facts."""
+    text = clean_pdf_text(text)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     line_counts = Counter(
         re.sub(r"\s+", " ", line).casefold()
@@ -145,15 +250,27 @@ def _has_meaningful_text(text: str) -> bool:
     return len(terms) >= 3
 
 
+def _limit_summary_sentences(text: str, limit: int) -> str:
+    """Keep generated summaries concise without rewriting their source claims."""
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        if sentence.strip()
+    ]
+    return " ".join(sentences[:limit])
+
+
 def format_document_upload_time(value: object) -> str:
-    """Render a persisted upload timestamp in the viewer's local timezone."""
+    """Render an upload timestamp consistently in Indian Standard Time."""
     try:
         uploaded_at = datetime.fromisoformat(str(value))
     except ValueError:
         return str(value)
-    if uploaded_at.tzinfo:
-        uploaded_at = uploaded_at.astimezone()
-    return uploaded_at.strftime("%d %b %Y, %I:%M %p %Z").strip()
+    if uploaded_at.tzinfo is None:
+        uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+    india_time = uploaded_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    time_label = india_time.strftime("%I:%M %p").lstrip("0")
+    return f"{india_time.strftime('%d %b %Y')} · {time_label} IST"
 
 
 def _document_path(document_id: str, documents_dir: Path) -> Path:
@@ -284,7 +401,8 @@ def list_library_documents(store: SQLiteStore) -> list[dict[str, object]]:
         """
         SELECT document_id, original_filename, uploaded_at, mime_type,
                size_bytes, processing_status, processing_error, summary_status,
-               summary_method, summary_headline, summary_text, summary_error
+               summary_method, summary_headline, summary_text, summary_error,
+               summary_version
         FROM raw_library_documents
         ORDER BY uploaded_at DESC, document_id
         """
@@ -316,16 +434,21 @@ def summarize_library_document(
     if document is None:
         raise DocumentNotFoundError("The selected document is no longer in the library.")
     summary_status = str(document.get("summary_status", "Not requested"))
-    if summary_status == "Completed" or (
-        summary_status != "Not requested" and not retry
+    if summary_status == "Processing":
+        return document
+    if (
+        is_document_summary_current(document)
+        and not retry
     ):
         return document
+    if summary_status not in {"Not requested", "Failed", "Completed"}:
+        return document
 
-    extracted_text = str(document.get("extracted_text") or "").strip()
+    extracted_text = clean_pdf_text(str(document.get("extracted_text") or ""))
     if not extracted_text:
         error = str(
             document.get("processing_error")
-            or "No selectable PDF text was available for summarisation."
+            or "No meaningful selectable text was found. This may be a scanned PDF; use an OCR-readable PDF."
         )
         _store_document_summary(
             document_id,
@@ -361,7 +484,7 @@ def summarize_library_document(
             raise DocumentNotFoundError("The selected document is no longer in the library.")
         return result
 
-    claim_status = "Failed" if retry else "Not requested"
+    claim_status = summary_status
     claimed = store.execute(
         """
         UPDATE raw_library_documents
@@ -382,26 +505,32 @@ def summarize_library_document(
         "that are not explicit in the text. Capture its main purpose and the most important "
         "rules, eligibility criteria, process changes, or procedures that are present. "
         "Return a JSON object with exactly two string fields: headline (a concise, factual "
-        "headline) and summary (two to four concise sentences). If the text does not support "
-        "a useful factual summary, explain that in the summary rather than inferring. "
+        "headline) and summary (two to four concise sentences). Return only the key purpose, "
+        "important rules, required actions, eligibility criteria, and significant process "
+        "details. Do not reproduce headings, page furniture, identifiers, version metadata, "
+        "or generic demo disclaimers. Do not imply fictional content is real regulation. "
+        "If the text does not support a useful factual summary, explain that in the summary "
+        "rather than inferring. "
         "Document text:\n"
         f"{extracted_text[:60_000]}"
     )
     try:
         payload = generate_json_with_gemini(prompt)
-        headline = payload.get("headline")
-        summary = payload.get("summary")
+        headline = clean_pdf_text(str(payload.get("headline") or ""))
+        summary = clean_pdf_text(str(payload.get("summary") or ""))
         if not isinstance(headline, str) or not headline.strip():
             raise ValueError("Gemini returned no summary headline.")
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("Gemini returned no summary text.")
+        if not _has_meaningful_text(headline + " " + summary):
+            raise ValueError("Gemini returned no meaningful summary.")
         _store_document_summary(
             document_id,
             store,
             "Completed",
             "Gemini",
             headline.strip()[:160],
-            summary.strip()[:1800],
+            _limit_summary_sentences(summary.strip(), 4)[:1800],
             "",
         )
     except Exception as error:
@@ -421,15 +550,7 @@ def summarize_library_document(
                 "",
             )
         else:
-            message = (
-                "The extracted text did not support a reliable factual summary. "
-                "Review the document text and retry."
-            )
-            if isinstance(error, GeminiUnavailableError):
-                message = (
-                    "Gemini is unavailable, and the extracted text did not support "
-                    "a reliable local summary. Review the document text and retry."
-                )
+            message = "A readable summary could not be prepared. Check the PDF text or upload an OCR-readable PDF."
             _store_document_summary(
                 document_id,
                 store,
@@ -477,10 +598,18 @@ def _store_document_summary(
         """
         UPDATE raw_library_documents
         SET summary_status = ?, summary_method = ?, summary_headline = ?,
-            summary_text = ?, summary_error = ?
+            summary_text = ?, summary_error = ?, summary_version = ?
         WHERE document_id = ?
         """,
-        (status, method, headline, summary, error, document_id),
+        (
+            status,
+            method,
+            headline,
+            summary,
+            error,
+            SUMMARY_VERSION if status == "Completed" else 0,
+            document_id,
+        ),
     )
     if updated != 1:
         raise DocumentNotFoundError("The selected document is no longer in the library.")

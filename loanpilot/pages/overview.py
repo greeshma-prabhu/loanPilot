@@ -7,8 +7,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from loanpilot.components import status_chip
 from loanpilot.data.document_library import (
     format_document_upload_time,
+    is_document_summary_current,
     list_library_documents,
 )
 from loanpilot.data.queries import overview_attention_cases
@@ -190,16 +192,23 @@ def _render_latest_updates(store: SQLiteStore) -> None:
     for update in updates:
         status = str(update.get("summary_status", "Not requested"))
         with st.container(border=True):
-            if status == "Completed":
+            if is_document_summary_current(update):
                 headline = escape(str(update.get("summary_headline", "")))
                 st.markdown(f"**{headline}**")
-                st.text(str(update.get("summary_text", "")))
+                summary = escape(str(update.get("summary_text", "")))
+                st.markdown(
+                    f'<p class="lp-update-summary">{summary}</p>',
+                    unsafe_allow_html=True,
+                )
+            elif status == "Completed":
+                st.caption("Summary needs refreshing")
+                st.write("Refresh this summary from the Document Library.")
             else:
                 status_label = "Processing" if status == "Processing" else "Failed"
                 st.caption(status_label)
                 if status == "Failed":
                     st.write(
-                        str(update.get("summary_error") or "A document summary is unavailable.")
+                        "A readable summary is unavailable. Check the PDF text or upload an OCR-readable document."
                     )
             st.caption(format_document_upload_time(update.get("uploaded_at")))
 
@@ -219,17 +228,64 @@ def _render_attention(store: SQLiteStore) -> None:
         st.info("No cases are currently awaiting human review.")
         return
     for _, case in cases.iterrows():
-        columns = st.columns([4, 1])
-        columns[0].write(
-            f"**{case['applicant']}** · {case['ai_recommendation'] or 'Pending'} · "
-            f"{case['risk_band'] or 'Pending'}"
+        recommendation = str(case.get("ai_recommendation") or "").strip()
+        risk_band = str(case.get("risk_band") or "").strip()
+        priority = risk_band or "Unspecified"
+        priority_kind = (
+            "danger"
+            if priority.casefold() in {"high", "critical", "very high"}
+            else "warning"
+            if priority != "Unspecified"
+            else "neutral"
         )
-        columns[1].button(
-            "Open",
-            key=f"overview_open_{case['application_id']}",
-            on_click=_open_case,
-            args=(str(case["application_id"]),),
+        submitted_at = pd.to_datetime(
+            case.get("submitted_at"),
+            utc=True,
+            errors="coerce",
         )
+        days_pending = (
+            max(0, (pd.Timestamp.now(tz="UTC") - submitted_at).days)
+            if not pd.isna(submitted_at)
+            else None
+        )
+        with st.container(border=True):
+            details, action = st.columns([5, 1])
+            with details:
+                st.markdown(f"**{escape(str(case['applicant']))}**")
+                issue = (
+                    f"AI recommendation: {escape(recommendation)}"
+                    if recommendation
+                    else "Awaiting an assessment recommendation"
+                )
+                st.markdown(
+                    f'<div class="lp-attention-issue">{issue}</div>',
+                    unsafe_allow_html=True,
+                )
+                age = (
+                    f"{days_pending} days pending"
+                    if days_pending is not None
+                    else "Waiting time unavailable"
+                )
+                st.markdown(
+                    f'<div class="lp-attention-meta">'
+                    f'<span>Stage · Human Review</span>'
+                    f'<span>{age}</span>'
+                    f'<span>Priority · {escape(priority)}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with action:
+                st.markdown(
+                    status_chip(priority, priority_kind),
+                    unsafe_allow_html=True,
+                )
+                st.button(
+                    "Open",
+                    key=f"overview_open_{case['application_id']}",
+                    on_click=_open_case,
+                    args=(str(case["application_id"]),),
+                    width="stretch",
+                )
 
 
 def render(store: SQLiteStore | None = None) -> None:

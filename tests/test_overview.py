@@ -4,6 +4,7 @@ from streamlit.testing.v1 import AppTest
 from fpdf import FPDF
 
 from loanpilot.data.document_library import (
+    SUMMARY_VERSION,
     format_document_upload_time,
     save_uploaded_pdf,
 )
@@ -147,6 +148,14 @@ def test_overview_opens_the_selected_attention_application(tmp_path, monkeypatch
     ).run()
 
     assert not app.exception
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert "Stage · Human Review" in content
+    assert "days pending" in content
+    assert "Priority · Medium" in content
     app.button(key="overview_open_APP-ATTENTION").click().run()
     assert not app.exception
     assert app.session_state["selected_application"] == "APP-ATTENTION"
@@ -168,10 +177,11 @@ def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> Non
         SET summary_status = 'Completed',
             summary_method = 'Local extractive',
             summary_headline = 'Verified income requirements',
-            summary_text = 'The document requires verified income evidence. It outlines how income should be reviewed.'
+            summary_text = 'The document requires verified income evidence. It outlines how income should be reviewed.',
+            summary_version = ?
         WHERE document_id = ?
         """,
-        (document["document_id"],),
+        (SUMMARY_VERSION, document["document_id"]),
     )
 
     app = AppTest.from_string(
@@ -192,3 +202,41 @@ def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> Non
     assert "Local extractive" not in content
     assert not app.get("file_uploader")
     assert not any("Read document" in button.label for button in app.button)
+
+
+def test_latest_updates_does_not_render_obsolete_raw_summary(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "obsolete-summary.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "old-policy.pdf",
+        _pdf_bytes(),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    store.execute(
+        """
+        UPDATE raw_library_documents
+        SET summary_status = 'Completed',
+            summary_headline = 'LOANPILOT AARAMBH BANK Page 1',
+            summary_text = 'LOANPILOT AARAMBH BANK FICTIONAL DEMO DOCUMENT Page 1',
+        summary_version = ?
+        WHERE document_id = ?
+        """,
+        (SUMMARY_VERSION, document["document_id"]),
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert not app.exception
+    assert "LOANPILOT AARAMBH BANK Page 1" not in content
+    assert "FICTIONAL DEMO DOCUMENT" not in content
+    assert "Summary needs refreshing" in content

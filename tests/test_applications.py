@@ -173,6 +173,7 @@ def test_seeded_only_store_shows_clean_empty_state_without_loading_demos(tmp_pat
     seed_demo_data(empty_store, reset=True)
     app = _render_app(empty_store).run()
     assert not app.exception
+    assert [item.value for item in app.title] == ["Applications"]
     assert any("No applications have been submitted yet." in element.value for element in app.info)
     assert not any("Load demo data" in button.label for button in app.button)
 

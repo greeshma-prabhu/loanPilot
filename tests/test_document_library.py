@@ -11,8 +11,11 @@ from streamlit.runtime.uploaded_file_manager import UploadedFile, UploadedFileRe
 from loanpilot.data import document_library
 from loanpilot.data.document_library import (
     MAX_DOCUMENT_SIZE_BYTES,
+    SUMMARY_VERSION,
     DocumentLibraryError,
+    clean_pdf_text,
     delete_library_document,
+    format_document_upload_time,
     get_library_document,
     list_library_documents,
     read_library_pdf,
@@ -115,6 +118,7 @@ def test_upload_automatically_summarizes_once_and_keeps_each_update(tmp_path, mo
     assert persisted_first is not None
     assert persisted_first["summary_status"] == "Completed"
     assert persisted_first["summary_method"] == "Gemini"
+    assert persisted_first["summary_version"] == SUMMARY_VERSION
     assert persisted_first["summary_headline"] == "Income eligibility guidance"
     assert "minimum monthly income" in persisted_first["summary_text"]
     assert len(calls) == 2
@@ -201,6 +205,38 @@ def test_local_extractive_summary_uses_document_sentences_and_skips_repeated_hea
     assert "verified proof of stable monthly income" in summary.casefold()
     assert "incomplete identity documents" in summary.casefold()
     assert summary.casefold().count("aarambh bank") == 0
+
+
+def test_pdf_cleanup_removes_furniture_without_losing_policy_controls():
+    """Repeated headers, IDs, pages, and encoding noise are removed."""
+    extracted = "\n".join(
+        [
+            "LOANPILOT | AARAMBH BANK",
+            "FICTIONAL DEMO DOCUMENT",
+            "Version: 4.2",
+            "Page 1 of 2",
+            "Audit records must include reviewer name, decision, reason, and timestamp.",
+            "Escalate suspected document tampering to the credit manager for review.",
+            "LOANPILOT | AARAMBH BANK",
+            "Page 2 of 2",
+            "Audit records must include reviewer name, decision, reason, and timestamp.",
+            "The applicant must submit verified income statements before approval.",
+            "Broken character: �",
+        ]
+    )
+
+    cleaned = clean_pdf_text(extracted)
+
+    assert "LOANPILOT" not in cleaned
+    assert "AARAMBH BANK" not in cleaned
+    assert "FICTIONAL DEMO DOCUMENT" not in cleaned
+    assert "Version: 4.2" not in cleaned
+    assert "Page 1" not in cleaned
+    assert "�" not in cleaned
+    assert cleaned.count("Audit records must include") == 1
+    assert "reviewer name, decision, reason, and timestamp" in cleaned
+    assert "Escalate suspected document tampering" in cleaned
+    assert "verified income statements" in cleaned
 
 
 def test_gemini_unavailable_falls_back_and_summary_persists_after_reopen(
@@ -354,6 +390,7 @@ def test_existing_document_schema_is_migrated_without_losing_records(tmp_path) -
     assert persisted["original_filename"] == "old.pdf"
     assert persisted["summary_status"] == "Not requested"
     assert persisted["summary_method"] == ""
+    assert persisted["summary_version"] == 0
     assert persisted["summary_headline"] == ""
 
 
@@ -392,10 +429,79 @@ def test_document_library_summary_retry_and_compact_header(tmp_path, monkeypatch
     assert "Manage PDF references for Aarambh Bank" not in visible_text
     assert "Extracted guidance is informational" not in visible_text
     assert any(button.key == f"library_retry_summary_{document['document_id']}" for button in app.button)
+    assert any(
+        format_document_upload_time(document["uploaded_at"]) in item.value
+        for item in app.caption
+    )
+    assert "Document summary is ready" not in "\n".join(
+        str(element.value) for element in app.caption
+    )
 
     app.button(key=f"library_retry_summary_{document['document_id']}").click().run()
     assert not app.exception
     assert get_library_document(str(document["document_id"]), store)["summary_status"] == "Completed"
+
+
+def test_old_summary_can_be_regenerated_from_cleaned_source_without_duplicate(tmp_path, monkeypatch):
+    """Refreshing an old summary updates its document record in place."""
+    store = SQLiteStore(tmp_path / "old-summary-refresh.db")
+    documents_dir = tmp_path / "library"
+    document = save_uploaded_pdf(
+        "old-policy.pdf",
+        _pdf_bytes(
+            "LOANPILOT AARAMBH BANK FICTIONAL DEMO DOCUMENT Page 1 "
+            "Applicants must provide verified income statements before review. "
+            "The credit team records the reviewer name, decision reason, and timestamp."
+        ),
+        store,
+        documents_dir=documents_dir,
+    )
+    store.execute(
+        """
+        UPDATE raw_library_documents
+        SET summary_status = 'Completed', summary_method = 'Gemini',
+            summary_headline = 'LOANPILOT AARAMBH BANK Page 1',
+            summary_text = 'LOANPILOT AARAMBH BANK FICTIONAL DEMO DOCUMENT Page 1',
+            summary_version = 0
+        WHERE document_id = ?
+        """,
+        (document["document_id"],),
+    )
+    prompts = []
+
+    def fake_gemini(prompt: str) -> dict[str, str]:
+        prompts.append(prompt)
+        return {
+            "headline": "Verified income review requirements",
+            "summary": (
+                "Applicants must provide verified income statements before review. "
+                "The credit team records the reviewer name, decision reason, and timestamp."
+            ),
+        }
+
+    monkeypatch.setattr(document_library, "generate_json_with_gemini", fake_gemini)
+    app = _render_library(store, documents_dir).run()
+    assert any(
+        button.key == f"library_retry_summary_{document['document_id']}"
+        and button.label == "Refresh summary"
+        for button in app.button
+    )
+    app.button(key=f"library_retry_summary_{document['document_id']}").click().run()
+
+    rows = list_library_documents(store)
+    refreshed = get_library_document(str(document["document_id"]), store)
+    assert len(rows) == 1
+    assert refreshed is not None
+    assert refreshed["summary_version"] == SUMMARY_VERSION
+    assert refreshed["summary_headline"] == "Verified income review requirements"
+    assert "LOANPILOT" not in prompts[0]
+    assert "FICTIONAL DEMO DOCUMENT" not in prompts[0]
+    assert "reviewer name, decision reason, and timestamp" in " ".join(
+        prompts[0].split()
+    )
+    assert "Document summary is ready" not in "\n".join(
+        str(element.value) for element in app.caption
+    )
 
 
 @pytest.mark.parametrize(

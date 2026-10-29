@@ -1,5 +1,9 @@
 """Shared visual elements for LoanPilot pages."""
 
+from base64 import b64encode
+from html import escape
+from pathlib import Path
+
 import streamlit as st
 
 from loanpilot.badges import implementation_badge
@@ -681,6 +685,244 @@ _CSS = """
         border-color: #138b83 !important;
         box-shadow: 0 0 0 3px rgba(19, 139, 131, .16) !important;
     }
+    :root {
+        --lp-ink: #12304a;
+        --lp-muted: #64748b;
+        --lp-teal: #0f9488;
+        --lp-line: #e2e9ed;
+        --lp-canvas: #f5f8fa;
+        --lp-surface: #ffffff;
+        --lp-soft-teal: #eaf6f4;
+    }
+    .stApp {
+        background: var(--lp-canvas);
+        color: var(--lp-ink);
+    }
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 2.25rem !important;
+        padding-bottom: 3rem !important;
+    }
+    [data-testid="stHeader"] {
+        background: rgba(245, 248, 250, .96);
+        backdrop-filter: blur(10px);
+    }
+    h1, h2, h3, h4 {
+        color: var(--lp-ink) !important;
+        letter-spacing: -.025em;
+    }
+    h1 {
+        font-size: clamp(2rem, 3.1vw, 2.65rem) !important;
+        font-weight: 740 !important;
+    }
+    h2 { font-weight: 700 !important; }
+    h3 { font-weight: 680 !important; }
+    p { color: var(--lp-muted); }
+    .lp-eyebrow {
+        color: #0b8178 !important;
+        font-size: .73rem;
+        letter-spacing: .13em;
+    }
+    .lp-subtitle {
+        color: #64748b !important;
+        margin-bottom: 1.25rem;
+    }
+    [data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 1px solid var(--lp-line);
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-layout {
+        min-height: calc(100dvh - 5.5rem);
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a {
+        min-height: 2.7rem;
+        padding: .55rem .7rem;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        color: #41576a;
+        transition: background-color .15s ease, border-color .15s ease;
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
+        background: #f3f8f8;
+        border-color: #e0eceb;
+        transform: none;
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a[aria-current="page"] {
+        background: var(--lp-soft-teal);
+        border-color: #cde7e3;
+        box-shadow: inset 3px 0 var(--lp-teal);
+        color: #12645e;
+        font-weight: 650;
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a[aria-current="page"] span,
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a[aria-current="page"] p {
+        color: #12645e !important;
+    }
+    .lp-sidebar-brand {
+        display: block;
+        margin: .2rem 0 .8rem;
+        padding: .35rem .45rem 1rem;
+        overflow: visible;
+        border: 0;
+        border-bottom: 1px solid var(--lp-line);
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+    .lp-sidebar-brand:before { display: none; }
+    .lp-sidebar-bank-row {
+        display: flex;
+        align-items: center;
+        gap: .65rem;
+        min-width: 0;
+    }
+    .lp-sidebar-bank-row img {
+        display: block;
+        flex: 0 0 42px;
+        width: 42px;
+        height: 42px;
+    }
+    .lp-sidebar-brand .lp-sidebar-bank-name {
+        color: #12304a;
+        font-size: 1.02rem;
+        font-weight: 740;
+        letter-spacing: -.02em;
+        line-height: 1.25;
+    }
+    .lp-sidebar-product-name {
+        margin: .5rem 0 0 3.1rem;
+        color: #0f8178;
+        font-size: .93rem;
+        font-weight: 740;
+        line-height: 1.25;
+    }
+    .lp-sidebar-tagline {
+        margin: .13rem 0 0 3.1rem;
+        color: #64748b;
+        font-size: .72rem;
+        line-height: 1.35;
+    }
+    .lp-update-summary {
+        margin: .25rem 0 .1rem;
+        color: #465d70;
+        font-size: .96rem;
+        line-height: 1.58;
+        overflow-wrap: anywhere;
+    }
+    .lp-attention-issue {
+        margin: .2rem 0 .5rem;
+        color: #52677a;
+        font-size: .9rem;
+        overflow-wrap: anywhere;
+    }
+    .lp-attention-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .35rem 1rem;
+        color: #687b8b;
+        font-size: .78rem;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area {
+        padding: .7rem 0 0;
+        border: 0;
+        border-top: 1px solid var(--lp-line);
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] {
+        margin-bottom: .65rem;
+        border-color: transparent;
+        background: transparent;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] summary {
+        border-radius: 10px;
+        color: #40576a;
+        font-weight: 620;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button {
+        min-height: 2.65rem;
+        border-radius: 10px;
+        background: #ffffff !important;
+        border: 1px solid #d5e0e5 !important;
+        box-shadow: none;
+        color: #30485d !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button * {
+        color: #30485d !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button:hover {
+        background: #f3f8f8 !important;
+        border-color: #b7d8d3 !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: var(--lp-line);
+        border-radius: 15px;
+        background: var(--lp-surface);
+        box-shadow: 0 3px 12px rgba(18, 48, 74, .035);
+    }
+    [data-testid="stMetric"] {
+        border-color: var(--lp-line);
+        border-radius: 14px;
+        background: linear-gradient(145deg, #fff, #f8fbfc);
+        box-shadow: 0 3px 12px rgba(18, 48, 74, .035);
+    }
+    [data-testid="stMetricValue"] { color: var(--lp-ink); }
+    [data-testid="stExpander"] {
+        border-color: var(--lp-line);
+        border-radius: 12px;
+        background: #fff;
+    }
+    [data-testid="stTabs"] button[aria-selected="true"] {
+        background: var(--lp-soft-teal);
+        color: #12645e;
+    }
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        border-color: var(--lp-line);
+        border-radius: 12px;
+        background: #fff;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stTable"] thead {
+        background: #f1f6f7;
+        color: #30485d;
+    }
+    [data-testid="stBaseButton-primary"] {
+        border-radius: 10px;
+        background: linear-gradient(120deg, #0f9488, #0b7e75) !important;
+        border: 1px solid #0b7e75 !important;
+        box-shadow: 0 3px 9px rgba(15, 148, 136, .16) !important;
+    }
+    [data-testid="stBaseButton-primary"]:hover {
+        background: linear-gradient(120deg, #0b8178, #086b64) !important;
+        box-shadow: 0 5px 13px rgba(15, 148, 136, .22) !important;
+    }
+    [data-testid="stBaseButton-secondary"] {
+        border-radius: 10px;
+        border-color: #cbd9df;
+        color: #23445a !important;
+    }
+    [data-baseweb="input"] > div,
+    [data-baseweb="textarea"] > div,
+    [data-baseweb="select"] > div {
+        border-color: #c9d6dd !important;
+        border-radius: 10px !important;
+    }
+    [data-baseweb="input"] > div:focus-within,
+    [data-baseweb="textarea"] > div:focus-within,
+    [data-baseweb="select"] > div:focus-within {
+        border-color: var(--lp-teal) !important;
+        box-shadow: 0 0 0 3px rgba(15, 148, 136, .17) !important;
+    }
+    [data-testid="stAlert"] {
+        border-radius: 12px;
+    }
+    @media (max-width: 760px) {
+        [data-testid="stMainBlockContainer"] {
+            padding: 1.25rem 1rem 2rem !important;
+        }
+        .lp-sidebar-brand { margin-bottom: .5rem; }
+        .lp-sidebar-bank-name { font-size: .98rem; }
+    }
 </style>
 """
 
@@ -688,6 +930,52 @@ _CSS = """
 def render_disclaimer() -> None:
     """Apply shared presentation styles without rendering a global banner."""
     st.markdown(_CSS, unsafe_allow_html=True)
+
+
+def bank_logo_data_uri() -> str:
+    """Return the bundled bank mark as a compact, transparent SVG data URI."""
+    logo_path = Path(__file__).resolve().parent / "assets" / "aarambh-bank-logo.svg"
+    encoded_logo = b64encode(logo_path.read_bytes()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded_logo}"
+
+
+def render_sidebar_brand(bank_name: str) -> None:
+    """Render the shared bank mark and product wordmark in the sidebar."""
+    st.markdown(
+        '<div class="lp-sidebar-brand">'
+        '<div class="lp-sidebar-bank-row">'
+        f'<img src="{bank_logo_data_uri()}" alt="" aria-hidden="true">'
+        f'<span class="lp-sidebar-bank-name">{escape(bank_name)}</span>'
+        '</div><div class="lp-sidebar-product-name">LoanPilot</div>'
+        '<div class="lp-sidebar-tagline">AI-Powered Lending Assistant</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_active_navigation_style(url_path: str) -> None:
+    """Apply a stable teal active state to the current native page link."""
+    selector = (
+        '[data-testid="stSidebar"] '
+        f'a[data-testid="stPageLink-NavLink"][href="{escape(url_path, quote=True)}"]'
+    )
+    st.markdown(
+        f"""
+        <style>
+        {selector} {{
+            background: #eaf6f4 !important;
+            border-color: #cde7e3 !important;
+            box-shadow: inset 3px 0 #0f9488 !important;
+            color: #12645e !important;
+            font-weight: 650 !important;
+        }}
+        {selector} span, {selector} p {{
+            color: #12645e !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_login_styles() -> None:
@@ -737,29 +1025,37 @@ def render_login_styles() -> None:
             display:flex;
             align-items:center;
             justify-content:center;
-            gap:12px;
+            gap:13px;
             margin-bottom:30px;
             color:#153447;
-            font-size:1.04rem;
-            font-weight:750;
-            letter-spacing:-.02em;
         }
-        .lp-login-brand-name {
-            color:#12374a;
-            font-size:1.16rem;
-            font-weight:780;
+        .lp-login-brand img {
+            display:block;
+            width:50px;
+            height:50px;
         }
-        .lp-login-brand-divider {
-            width:1px;
-            height:22px;
-            background:#c9d9d8;
-            color:transparent;
+        .lp-login-brand-copy {
+            display:flex;
+            flex-direction:column;
+            align-items:flex-start;
+            gap:2px;
         }
         .lp-login-bank-name {
-            color:#42616b;
-            font-size:.88rem;
-            font-weight:650;
-            letter-spacing:.015em;
+            color:#12304a;
+            font-size:1.06rem;
+            font-weight:740;
+            line-height:1.2;
+        }
+        .lp-login-product-name {
+            color:#0f8178;
+            font-size:.91rem;
+            font-weight:720;
+            line-height:1.2;
+        }
+        .lp-login-tagline {
+            color:#64748b;
+            font-size:.73rem;
+            line-height:1.25;
         }
         .lp-login-title {
             margin:0;

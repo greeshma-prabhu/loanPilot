@@ -16,6 +16,7 @@ from loanpilot.pages import (
     approach_story,
     data_explorer,
     document_library,
+    guided_demo,
     human_review,
     login,
     new_application,
@@ -30,7 +31,7 @@ PAGE_MODULES = [
     ai_assessment,
     human_review,
     document_library,
-    document_library,
+    guided_demo,
     approach_story,
     technical_architecture,
     data_explorer,
@@ -94,12 +95,12 @@ def test_know_more_pages_are_registered_in_hidden_navigation() -> None:
 
 
 def test_document_library_follows_human_review_in_operate_navigation() -> None:
-    """Keep the library immediately after review in the shared sidebar order."""
+    """Keep the library and Guided Demo in the agreed order."""
     from loanpilot.navigation import OPERATE_PAGES
 
     ordered_keys = list(OPERATE_PAGES)
-    review_index = ordered_keys.index("human_review")
-    assert ordered_keys[review_index + 1] == "document_library"
+    library_index = ordered_keys.index("document_library")
+    assert ordered_keys[library_index + 1] == "guided_demo"
 
 
 @pytest.mark.parametrize(

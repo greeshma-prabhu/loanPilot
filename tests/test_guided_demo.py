@@ -77,6 +77,9 @@ def test_demo_progression_override_rationale_and_restart() -> None:
     app.button(key="guided_demo_next").click().run()
     assert app.session_state["guided_demo_step"] == 3
     assert any("Referred – Illustrative Demo" in item.value for item in app.markdown)
+    assert not any(button.label == "Next Step" for button in app.button)
+    assert any(button.label == "Previous Step" for button in app.button)
+    assert any(button.label == "Restart Demo" for button in app.button)
 
     app.button(key="guided_demo_restart").click().run()
     assert "guided_demo_started" not in app.session_state

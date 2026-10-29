@@ -436,14 +436,15 @@ def render() -> None:
             on_click=_go_to_step,
             args=(max(0, current_step - 1),),
         )
-        controls[1].button(
-            "Next Step",
-            key="guided_demo_next",
-            type="primary",
-            disabled=current_step == len(STAGES) - 1 or is_waiting or override_invalid,
-            on_click=_go_to_step,
-            args=(min(len(STAGES) - 1, current_step + 1),),
-        )
+        if current_step < len(STAGES) - 1:
+            controls[1].button(
+                "Next Step",
+                key="guided_demo_next",
+                type="primary",
+                disabled=is_waiting or override_invalid,
+                on_click=_go_to_step,
+                args=(current_step + 1,),
+            )
         controls[2].button(
             "Restart Demo",
             key="guided_demo_restart",

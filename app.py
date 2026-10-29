@@ -45,24 +45,12 @@ def main() -> None:
         "Access": [LOGIN_PAGE],
     }
     navigation = st.navigation(navigation_pages, position="hidden")
-    auth = st.session_state["auth"]
     with st.sidebar:
         st.markdown(
             '<div class="lp-sidebar-brand">LoanPilot'
             f'<span>{config.BANK_NAME}</span></div>',
             unsafe_allow_html=True,
         )
-        with st.container(border=True):
-            st.markdown(
-                f"**Signed in as {auth['name']} · {auth['role']}**"
-            )
-            st.button(
-                "Sign out",
-                key="sign_out",
-                on_click=_sign_out,
-                args=(LOGIN_PAGE,),
-                width="stretch",
-            )
         for key in ("overview", "applications", "new_application", "ai_assessment", "human_review"):
             st.page_link(OPERATE_PAGES[key])
         with st.expander("Know more", expanded=False):
@@ -80,6 +68,13 @@ def main() -> None:
             st.success("First-run setup complete. Synthetic cases and sample PDFs are ready.")
         elif bootstrap_notice == "documents_restored":
             st.success("Missing sample documents were restored from synthetic data.")
+        st.button(
+            "Sign out",
+            key="sign_out",
+            on_click=_sign_out,
+            args=(LOGIN_PAGE,),
+            width="stretch",
+        )
     navigation.run()
 
 

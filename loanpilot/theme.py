@@ -606,6 +606,26 @@ _CSS = """
     [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] * {
         color: #34454c !important;
     }
+    [data-testid="stSidebar"] .st-key-sign_out {
+        position: fixed;
+        left: 16px;
+        bottom: 14px;
+        z-index: 1000;
+        width: 234px;
+        padding-top: 8px;
+        background: #fff;
+    }
+    [data-testid="stSidebar"] .st-key-sign_out button {
+        width: 100%;
+        border: 1px solid #d7e0e3 !important;
+        border-radius: 10px;
+        background: #fff !important;
+        color: #34454c !important;
+    }
+    [data-testid="stSidebar"] .st-key-sign_out button:hover {
+        border-color: #9fb3ad !important;
+        background: #f4f7f8 !important;
+    }
     .lp-eyebrow { color: #138b83 !important; }
     .lp-subtitle { color: #68777d !important; }
     [data-baseweb="input"] > div,

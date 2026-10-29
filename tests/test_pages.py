@@ -86,6 +86,21 @@ def test_logged_out_app_does_not_expose_product_navigation() -> None:
     assert not app.get("page_link")
 
 
+def test_authenticated_app_can_rerun_without_reusing_page_objects() -> None:
+    """Repeated entrypoint runs create fresh page objects for Streamlit navigation."""
+    app = AppTest.from_file(str(APP_PATH))
+    app.session_state["auth"] = {
+        "name": "Smoke Test Analyst",
+        "role": "Credit Analyst",
+        "method": "demo",
+    }
+
+    app.run()
+    assert not app.exception
+    app.run()
+    assert not app.exception
+
+
 def test_know_more_pages_are_registered_in_hidden_navigation() -> None:
     """Dialog links target pages registered with Streamlit navigation."""
     from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION

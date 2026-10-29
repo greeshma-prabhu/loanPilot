@@ -13,7 +13,7 @@ from loanpilot.auth.session import (
     restore_session_token,
 )
 from loanpilot.pages import login
-from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION, OPERATE_PAGES
+from loanpilot import navigation as page_navigation
 from loanpilot.theme import render_active_navigation_style, render_sidebar_brand
 
 LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
@@ -80,6 +80,7 @@ def _sign_out(login_page) -> None:
 
 def main() -> None:
     """Gate all product navigation behind a session-level sign-in."""
+    global LOGIN_PAGE
     st.set_page_config(
         page_title=config.APP_NAME,
         page_icon=str(config.BANK_LOGO_PATH),
@@ -94,8 +95,10 @@ def main() -> None:
 
     from loanpilot.data.schema import create_schema
     from loanpilot.data.store import SQLiteStore
+    operate_pages, know_more_pages, page_groups = page_navigation.build_navigation()
+    LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
     navigation_pages = {
-        **NAVIGATION,
+        **page_groups,
         "Access": [LOGIN_PAGE],
     }
     navigation = st.navigation(navigation_pages, position="hidden")
@@ -117,7 +120,7 @@ def main() -> None:
                     "document_library": ":material/description:",
                     "guided_demo": ":material/play_circle:",
                 }
-                for key, page in OPERATE_PAGES.items():
+                for key, page in operate_pages.items():
                     st.page_link(page, icon=page_icons[key])
             with st.container(key="sidebar-sign-out-area"):
                 with st.expander("Know More", expanded=False):
@@ -132,7 +135,7 @@ def main() -> None:
                         ("about_faq", "About & FAQ", ":material/info:"),
                     )
                     for key, label, icon in know_more:
-                        st.page_link(KNOW_MORE_PAGES[key], label=label, icon=icon)
+                        st.page_link(know_more_pages[key], label=label, icon=icon)
                 st.button(
                     "Sign out",
                     key="sign_out",

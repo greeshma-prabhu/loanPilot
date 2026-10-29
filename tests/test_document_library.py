@@ -17,6 +17,7 @@ from loanpilot.data.document_library import (
     delete_library_document,
     format_document_upload_time,
     get_library_document,
+    is_document_summary_current,
     list_library_documents,
     read_library_pdf,
     save_uploaded_pdf,
@@ -140,6 +141,83 @@ def test_upload_automatically_summarizes_once_and_keeps_each_update(tmp_path, mo
     assert get_library_document(str(second["document_id"]), reopened)["summary_status"] == "Completed"
 
 
+def test_document_library_shows_file_metadata_and_actions_only(tmp_path, monkeypatch) -> None:
+    """The library lists name/date and file actions, not document summaries."""
+    store = SQLiteStore(tmp_path / "visible-summary.db")
+    documents_dir = tmp_path / "library"
+    monkeypatch.setattr(
+        document_library,
+        "generate_json_with_gemini",
+        lambda _prompt: {
+            "headline": "Income evidence review",
+            "summary": (
+                "Applicants provide proof of monthly income. "
+                "Reviewers compare declared income with supporting documents."
+            ),
+        },
+    )
+    document = upload_and_summarize_pdf(
+        "income-guide.pdf",
+        _pdf_bytes("Applicants provide proof of monthly income."),
+        store,
+        documents_dir=documents_dir,
+    )
+
+    app = _render_library(store, documents_dir).run()
+    assert not app.exception
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert "income-guide.pdf" in content
+    assert format_document_upload_time(
+        get_library_document(str(document["document_id"]), store)["uploaded_at"]
+    ) in content
+    assert "Income evidence review" not in content
+    assert "Applicants provide proof of monthly income" not in content
+    assert "Generate summary" not in content
+    assert "Regenerate summary" not in content
+    assert "Read / View" in [button.label for button in app.button]
+    assert "Delete" in [button.label for button in app.button]
+    assert (
+        get_library_document(str(document["document_id"]), store)["summary_status"]
+        == "Completed"
+    )
+
+
+def test_gemini_summary_filters_generic_disclaimer_sentences(tmp_path, monkeypatch) -> None:
+    """Generic demo disclaimers cannot replace or invalidate useful summary text."""
+    store = SQLiteStore(tmp_path / "summary-disclaimer.db")
+    monkeypatch.setattr(
+        document_library,
+        "generate_json_with_gemini",
+        lambda _prompt: {
+            "headline": "Income evidence review",
+            "summary": (
+                "Applicants provide proof of monthly income. "
+                "This guide alone does not approve the case. "
+                "Reviewers compare declared income with supporting documents."
+            ),
+        },
+    )
+
+    document = upload_and_summarize_pdf(
+        "income-guide.pdf",
+        _pdf_bytes(
+            "Applicants provide proof of monthly income. "
+            "Reviewers compare declared income with supporting documents."
+        ),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+
+    assert document["summary_method"] == "Gemini"
+    assert is_document_summary_current(document)
+    assert "This guide alone does not approve" not in document["summary_text"]
+    assert "Reviewers compare declared income" in document["summary_text"]
+
+
 def test_failed_extraction_is_honest_and_gemini_failure_uses_local_fallback(
     tmp_path,
     monkeypatch,
@@ -189,6 +267,9 @@ def test_local_extractive_summary_uses_document_sentences_and_skips_repeated_hea
     extracted_text = "\n".join(
         [
             "AARAMBH BANK - INTERNAL LENDING GUIDELINE",
+            "Not an actual bank policy, legal advice, or a real loan decision.",
+            "Production policies require approval by the relevant institution.",
+            "This guide alone does not approve the case; affordability and verification remain necessary.",
             "Applicants must provide verified proof of stable monthly income.",
             "The credit team checks existing repayment obligations before eligibility.",
             "AARAMBH BANK - INTERNAL LENDING GUIDELINE",
@@ -205,6 +286,9 @@ def test_local_extractive_summary_uses_document_sentences_and_skips_repeated_hea
     assert "verified proof of stable monthly income" in summary.casefold()
     assert "incomplete identity documents" in summary.casefold()
     assert summary.casefold().count("aarambh bank") == 0
+    assert "not an actual bank policy" not in summary.casefold()
+    assert "production policies require approval" not in summary.casefold()
+    assert "this guide alone does not approve the case" not in summary.casefold()
 
 
 def test_pdf_cleanup_removes_furniture_without_losing_policy_controls():
@@ -394,7 +478,7 @@ def test_existing_document_schema_is_migrated_without_losing_records(tmp_path) -
     assert persisted["summary_headline"] == ""
 
 
-def test_document_library_summary_retry_and_compact_header(tmp_path, monkeypatch) -> None:
+def test_document_library_has_no_summary_actions_or_summary_content(tmp_path, monkeypatch) -> None:
     store = SQLiteStore(tmp_path / "retry-ui.db")
     documents_dir = tmp_path / "library"
     document = save_uploaded_pdf(
@@ -414,10 +498,7 @@ def test_document_library_summary_retry_and_compact_header(tmp_path, monkeypatch
     monkeypatch.setattr(
         document_library,
         "generate_json_with_gemini",
-        lambda prompt: {
-            "headline": "Verified income requirements",
-            "summary": "The policy requires verified monthly income.",
-        },
+        lambda _prompt: pytest.fail("Document Library must not generate summaries"),
     )
     app = _render_library(store, documents_dir).run()
     assert not app.exception
@@ -428,22 +509,29 @@ def test_document_library_summary_retry_and_compact_header(tmp_path, monkeypatch
     )
     assert "Manage PDF references for Aarambh Bank" not in visible_text
     assert "Extracted guidance is informational" not in visible_text
-    assert any(button.key == f"library_retry_summary_{document['document_id']}" for button in app.button)
+    assert "Summary unavailable" not in visible_text
+    assert "Generate summary" not in visible_text
+    assert not any("summary" in button.label.casefold() for button in app.button)
+    assert [
+        button.label
+        for button in app.button
+        if button.key in {
+            f"library_view_{document['document_id']}",
+            f"library_delete_{document['document_id']}",
+        }
+    ] == ["Read / View", "Delete"]
     assert any(
         format_document_upload_time(document["uploaded_at"]) in item.value
         for item in app.caption
     )
-    assert "Document summary is ready" not in "\n".join(
-        str(element.value) for element in app.caption
+    assert (
+        get_library_document(str(document["document_id"]), store)["summary_status"]
+        == "Failed"
     )
 
-    app.button(key=f"library_retry_summary_{document['document_id']}").click().run()
-    assert not app.exception
-    assert get_library_document(str(document["document_id"]), store)["summary_status"] == "Completed"
 
-
-def test_old_summary_can_be_regenerated_from_cleaned_source_without_duplicate(tmp_path, monkeypatch):
-    """Refreshing an old summary updates its document record in place."""
+def test_overview_regenerates_old_summary_from_cleaned_source(tmp_path, monkeypatch):
+    """Overview refreshes an obsolete summary without adding a duplicate record."""
     store = SQLiteStore(tmp_path / "old-summary-refresh.db")
     documents_dir = tmp_path / "library"
     document = save_uploaded_pdf(
@@ -480,16 +568,15 @@ def test_old_summary_can_be_regenerated_from_cleaned_source_without_duplicate(tm
         }
 
     monkeypatch.setattr(document_library, "generate_json_with_gemini", fake_gemini)
-    app = _render_library(store, documents_dir).run()
-    assert any(
-        button.key == f"library_retry_summary_{document['document_id']}"
-        and button.label == "Refresh summary"
-        for button in app.button
-    )
-    app.button(key=f"library_retry_summary_{document['document_id']}").click().run()
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
 
     rows = list_library_documents(store)
     refreshed = get_library_document(str(document["document_id"]), store)
+    assert not app.exception
     assert len(rows) == 1
     assert refreshed is not None
     assert refreshed["summary_version"] == SUMMARY_VERSION
@@ -498,9 +585,6 @@ def test_old_summary_can_be_regenerated_from_cleaned_source_without_duplicate(tm
     assert "FICTIONAL DEMO DOCUMENT" not in prompts[0]
     assert "reviewer name, decision reason, and timestamp" in " ".join(
         prompts[0].split()
-    )
-    assert "Document summary is ready" not in "\n".join(
-        str(element.value) for element in app.caption
     )
 
 

@@ -6,30 +6,19 @@ from pathlib import Path
 
 import streamlit as st
 
-from loanpilot.components import status_chip
 from loanpilot.config import DOCUMENT_LIBRARY_DIR
 from loanpilot.data.document_library import (
     MAX_DOCUMENT_SIZE_BYTES,
     DocumentLibraryError,
     delete_library_document,
     format_document_upload_time,
-    is_document_summary_current,
     list_library_documents,
     read_library_pdf,
-    summarize_library_document,
-    upload_and_summarize_pdf,
+    save_uploaded_pdf,
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
-
-
-def _format_size(value: object) -> str:
-    """Render a small PDF size without rounding it down to zero."""
-    size_bytes = int(value)
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
 def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
@@ -61,11 +50,11 @@ def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
             type="primary",
             disabled=uploaded_file is None or bool(upload_error),
         ):
-            with st.spinner("Saving the PDF, extracting text, and preparing its summary..."):
+            with st.spinner("Saving the PDF and extracting its text..."):
                 try:
                     uploaded_name = str(uploaded_file.name)
                     uploaded_content = bytes(uploaded_file.getvalue())
-                    document = upload_and_summarize_pdf(
+                    document = save_uploaded_pdf(
                         uploaded_name,
                         uploaded_content,
                         store,
@@ -76,6 +65,10 @@ def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
                 else:
                     if document["processing_status"] != "Processed":
                         st.warning(str(document["processing_error"]))
+                    else:
+                        st.success(
+                            "Document uploaded. Its summary will be prepared on Overview."
+                        )
 
 
 def _render_document_list(
@@ -93,25 +86,12 @@ def _render_document_list(
         document_id = str(document["document_id"])
         with st.container(border=True):
             st.write(str(document["original_filename"]))
-            st.caption(
-                f"{format_document_upload_time(document['uploaded_at'])} · PDF · "
-                f"{_format_size(document['size_bytes'])}"
-            )
-            status = str(document["processing_status"])
-            st.markdown(
-                status_chip(
-                    status,
-                    {"Processed": "success", "Failed": "danger"}.get(status, "info"),
-                ),
-                unsafe_allow_html=True,
-            )
-            if document["processing_error"]:
+            st.caption(format_document_upload_time(document["uploaded_at"]))
+            if (
+                document["processing_status"] != "Processed"
+                and document["processing_error"]
+            ):
                 st.caption(str(document["processing_error"]))
-            summary_status = str(document.get("summary_status", "Not requested"))
-            if summary_status == "Failed":
-                st.caption("Summary unavailable. Review the PDF text or retry.")
-            elif summary_status == "Processing":
-                st.caption("Summary is being prepared.")
             view_column, delete_column = st.columns(2)
             with view_column:
                 if st.button(
@@ -127,26 +107,6 @@ def _render_document_list(
                     width="stretch",
                 ):
                     st.session_state["library_delete_pending"] = document_id
-            if document["processing_status"] == "Processed":
-                summary_action = (
-                    "Refresh summary"
-                    if not is_document_summary_current(document)
-                    and summary_status == "Completed"
-                    else "Retry summary"
-                    if summary_status == "Failed"
-                    else "Generate summary"
-                )
-                if st.button(
-                    summary_action,
-                    key=f"library_retry_summary_{document_id}",
-                ):
-                    with st.spinner("Retrying document summary..."):
-                        summarize_library_document(
-                            document_id,
-                            store,
-                            retry=True,
-                        )
-                    st.rerun()
 
     pending_id = st.session_state.get("library_delete_pending")
     pending = next(

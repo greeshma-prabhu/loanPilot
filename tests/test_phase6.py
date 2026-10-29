@@ -19,6 +19,7 @@ from loanpilot.data.queries import (
     list_applications,
     record_human_decision,
 )
+from loanpilot.data.demo_seed import seed_synthetic_applications
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
@@ -37,6 +38,7 @@ def seeded_store(tmp_path_factory) -> SQLiteStore:
     """Create one isolated synthetic database for dashboard and navigation tests."""
     store = SQLiteStore(tmp_path_factory.mktemp("phase6") / "demo.db")
     seed_demo_data(store, reset=True)
+    seed_synthetic_applications(store)
     return store
 
 
@@ -557,15 +559,16 @@ def test_overview_analytics_match_persisted_application_records(seeded_store) ->
 
     app = _render_page("overview", seeded_store).run()
     assert not app.exception
-    assert app.title[0].value == "Overview"
-    assert len(app.get("plotly_chart")) == 1
+    assert app.title[0].value == "Welcome back"
+    assert len(app.get("plotly_chart")) == 2
     assert app.selectbox[0].label == "Application year"
     assert [int(year) for year in app.selectbox[0].options] == years
     headings = [item.value for item in app.subheader]
     assert headings == [
-        "Loan Portfolio Analytics",
-        "Latest Updates",
+        "Application Trends",
         "Needs Your Attention",
+        "Recent Applications",
+        "Latest Updates",
     ]
 
 
@@ -590,7 +593,7 @@ def test_phase6_pages_render_with_empty_database(module: str, tmp_path) -> None:
     app = _render_page(module, store).run()
     assert not app.exception
     if module == "overview":
-        assert any("Portfolio analytics will appear" in item.value for item in app.info)
+        assert any("Application trends will appear" in item.value for item in app.info)
     else:
         assert app.title[0].value == "New Application"
 

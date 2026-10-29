@@ -6,7 +6,7 @@ import os
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BANK_NAME = "Aarambh Bank"
 APP_NAME = "LoanPilot: Agentic Personal Loan Approval"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 BANK_LOGO_PATH = PROJECT_ROOT / "loanpilot" / "assets" / "aarambh-bank-logo.svg"
 
 DATA_DIR = PROJECT_ROOT / "data"

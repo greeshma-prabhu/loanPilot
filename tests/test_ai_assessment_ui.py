@@ -47,7 +47,7 @@ def test_assessment_displays_the_user_created_case_and_decision(assessed_store) 
         get_application(_APPLICATION_ID, assessed_store).iloc[0]["name"]
         == "Assessment Applicant"
     )
-    assert "Key numbers" in content
+    assert any(item.value == "Key numbers" for item in app.subheader)
     assert "Priya Menon" not in content
     assert "Karthik Nair" not in content
     assert any(item.label == "Run assessment" for item in app.button)

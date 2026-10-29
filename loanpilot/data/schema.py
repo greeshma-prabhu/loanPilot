@@ -180,6 +180,11 @@ CREATE TABLE IF NOT EXISTS cur_disbursements (
     mode TEXT NOT NULL CHECK (mode = 'simulated'),
     FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
 );
+CREATE TABLE IF NOT EXISTS demo_seed_markers (
+    seed_name TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    applied_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_cur_applications_customer
     ON cur_applications(customer_id);
 CREATE INDEX IF NOT EXISTS idx_cur_agent_trace_run

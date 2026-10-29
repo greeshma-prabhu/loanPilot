@@ -2,10 +2,14 @@
 
 from streamlit.testing.v1 import AppTest
 from fpdf import FPDF
+import pandas as pd
+import pytest
 
 from loanpilot.data.document_library import (
     SUMMARY_VERSION,
     format_document_upload_time,
+    get_library_document,
+    is_document_summary_current,
     save_uploaded_pdf,
 )
 from loanpilot.data.schema import create_schema
@@ -162,6 +166,47 @@ def test_overview_opens_the_selected_attention_application(tmp_path, monkeypatch
     assert len(switched) == 1
 
 
+def test_overview_handles_missing_attention_fields(tmp_path, monkeypatch) -> None:
+    store = SQLiteStore(tmp_path / "attention-missing-fields.db")
+    create_schema(store)
+    monkeypatch.setattr(
+        overview,
+        "overview_attention_cases",
+        lambda _store: pd.DataFrame(
+            [
+                {
+                    "applicant": float("nan"),
+                    "application_id": "APP-MISSING-OPTIONAL",
+                    "requested_amount": float("nan"),
+                    "submitted_at": None,
+                    "stage": float("nan"),
+                    "ai_recommendation": float("nan"),
+                    "risk_band": float("nan"),
+                    "attention_priority": float("nan"),
+                    "attention_reason": float("nan"),
+                }
+            ]
+        ),
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    assert not app.exception
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert "Stage · Unknown" in content
+    assert "Requested · Unavailable" in content
+    assert "Priority · Unspecified" in content
+    assert "nan" not in content.casefold()
+
+
 def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> None:
     store = SQLiteStore(tmp_path / "latest-updates.db")
     create_schema(store)
@@ -204,7 +249,90 @@ def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> Non
     assert not any("Read document" in button.label for button in app.button)
 
 
-def test_latest_updates_does_not_render_obsolete_raw_summary(tmp_path) -> None:
+def test_overview_generates_a_new_document_summary(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "overview-summary-extraction.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "income-policy.pdf",
+        _pdf_bytes(),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    assert document["summary_status"] == "Not requested"
+    monkeypatch.setattr(
+        "loanpilot.data.document_library.generate_json_with_gemini",
+        lambda _prompt: {
+            "headline": "Lending eligibility",
+            "summary": (
+                "Lending eligibility requires verified monthly income. "
+                "Reviewers compare the evidence with the application."
+            ),
+        },
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    persisted = get_library_document(str(document["document_id"]), store)
+    assert not app.exception
+    assert persisted is not None
+    assert persisted["summary_status"] == "Completed"
+    assert persisted["summary_method"] == "Gemini"
+    assert is_document_summary_current(persisted)
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert "Lending eligibility" in content
+
+
+def test_overview_uses_local_fallback_when_gemini_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "overview-summary-fallback.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "income-policy.pdf",
+        _pdf_bytes(),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    monkeypatch.setattr(
+        "loanpilot.data.document_library.generate_json_with_gemini",
+        lambda _prompt: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    persisted = get_library_document(str(document["document_id"]), store)
+    content = "\n".join(
+        str(element.value)
+        for name in ("markdown", "text", "caption")
+        for element in getattr(app, name, [])
+    )
+    assert not app.exception
+    assert persisted is not None
+    assert persisted["summary_method"] == "Local extractive"
+    assert "Extractive summary · local fallback" in content
+    assert "Lending eligibility" in content
+
+
+def test_latest_updates_refreshes_obsolete_summary_from_extracted_text(
+    tmp_path,
+    monkeypatch,
+) -> None:
     store = SQLiteStore(tmp_path / "obsolete-summary.db")
     create_schema(store)
     document = save_uploaded_pdf(
@@ -224,6 +352,16 @@ def test_latest_updates_does_not_render_obsolete_raw_summary(tmp_path) -> None:
         """,
         (SUMMARY_VERSION, document["document_id"]),
     )
+    monkeypatch.setattr(
+        "loanpilot.data.document_library.generate_json_with_gemini",
+        lambda _prompt: {
+            "headline": "Lending eligibility",
+            "summary": (
+                "Lending eligibility requires verified monthly income. "
+                "Reviewers compare the evidence with the application."
+            ),
+        },
+    )
 
     app = AppTest.from_string(
         "from loanpilot.data.store import SQLiteStore\n"
@@ -239,4 +377,15 @@ def test_latest_updates_does_not_render_obsolete_raw_summary(tmp_path) -> None:
     assert not app.exception
     assert "LOANPILOT AARAMBH BANK Page 1" not in content
     assert "FICTIONAL DEMO DOCUMENT" not in content
-    assert "Summary needs refreshing" in content
+    assert "Summary needs refreshing" not in content
+    assert "Lending eligibility" in content
+    refreshed = store.query(
+        "SELECT summary_status, summary_method, summary_version "
+        "FROM raw_library_documents WHERE document_id = ?",
+        (document["document_id"],),
+    ).iloc[0]
+    assert refreshed.to_dict() == {
+        "summary_status": "Completed",
+        "summary_method": "Gemini",
+        "summary_version": SUMMARY_VERSION,
+    }

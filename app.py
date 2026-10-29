@@ -1,11 +1,13 @@
 """LoanPilot Streamlit application entry point."""
 
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 
 import extra_streamlit_components as stx
 import streamlit as st
 
 from loanpilot import config
+from loanpilot.data.store import SQLiteStore
 from loanpilot.auth.session import (
     AUTH_COOKIE_NAME,
     SESSION_SECONDS,
@@ -17,6 +19,21 @@ from loanpilot import navigation as page_navigation
 from loanpilot.theme import render_active_navigation_style, render_sidebar_brand
 
 LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
+SIGNED_OUT_COOKIE_NAME = "loanpilot_signed_out"
+_SEEDED_DATABASE_PATHS: set[str] = set()
+_SEED_INITIALIZATION_LOCK = Lock()
+
+
+def _seed_demo_database_once(store: SQLiteStore) -> None:
+    """Run the persistent seed once per database path in this app process."""
+    database_path = str(store.path.resolve())
+    with _SEED_INITIALIZATION_LOCK:
+        if database_path in _SEEDED_DATABASE_PATHS:
+            return
+        from loanpilot.data.demo_seed import seed_synthetic_applications
+
+        seed_synthetic_applications(store)
+        _SEEDED_DATABASE_PATHS.add(database_path)
 
 
 def _sync_auth_cookie(
@@ -44,11 +61,35 @@ def _sync_auth_cookie(
             secure=secure_cookie,
             same_site="lax",
         )
+        cookie_manager.cookies.setdefault(SIGNED_OUT_COOKIE_NAME, "")
+        cookie_manager.delete(
+            SIGNED_OUT_COOKIE_NAME,
+            key="clear_loanpilot_signed_out",
+        )
+        st.session_state.pop("_signed_out", None)
         return
     if action == "delete":
         _delete_auth_cookie(cookie_manager)
+        current_url = request_url or str(getattr(context, "url", ""))
+        cookie_manager.set(
+            SIGNED_OUT_COOKIE_NAME,
+            "1",
+            key="set_loanpilot_signed_out",
+            path="/",
+            max_age=SESSION_SECONDS,
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=SESSION_SECONDS),
+            secure=current_url.startswith("https://"),
+            same_site="lax",
+        )
         return
     if st.session_state.get("auth"):
+        return
+    if (
+        st.session_state.get("_signed_out")
+        or request_cookies.get(SIGNED_OUT_COOKIE_NAME)
+        or cookie_manager.cookies.get(SIGNED_OUT_COOKIE_NAME)
+    ):
         return
 
     # st.context.cookies is populated from the HTTP request and is authoritative
@@ -73,7 +114,15 @@ def _delete_auth_cookie(cookie_manager) -> None:
 
 def _sign_out(login_page) -> None:
     """Clear identity, expire the browser token, and switch to login."""
-    st.session_state.pop("auth", None)
+    for key in list(st.session_state.keys()):
+        if (
+            key == "auth"
+            or key.startswith("auth_")
+            or key.startswith("login_")
+            or key == "_auth_cookie_action"
+        ):
+            st.session_state.pop(key, None)
+    st.session_state["_signed_out"] = True
     st.session_state["_auth_cookie_action"] = "delete"
     st.switch_page(login_page)
 
@@ -107,6 +156,7 @@ def main() -> None:
 
     store = SQLiteStore()
     create_schema(store)
+    _seed_demo_database_once(store)
 
     with st.sidebar:
         render_active_navigation_style(navigation.url_path)

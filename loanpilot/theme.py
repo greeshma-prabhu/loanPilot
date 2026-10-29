@@ -37,13 +37,21 @@ _CSS = """
         min-width: 0 !important;
     }
     @media (max-width: 760px) {
-        [class*="st-key-overview_portfolio_layout"] [data-testid="stHorizontalBlock"] {
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-overview_portfolio_monthly"]) {
             flex-direction: column !important;
             align-items: stretch !important;
         }
-        [class*="st-key-overview_portfolio_layout"] [data-testid="stColumn"] {
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-overview_portfolio_monthly"]) [data-testid="stColumn"] {
             width: 100% !important;
             flex: 1 1 100% !important;
+        }
+        [data-testid="stMain"]:has([class*="st-key-overview_portfolio_year"]) [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
+            flex-wrap: wrap !important;
+            gap: .55rem !important;
+        }
+        [data-testid="stMain"]:has([class*="st-key-overview_portfolio_year"]) [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) [data-testid="stColumn"] {
+            width: calc(50% - .3rem) !important;
+            flex: 1 1 calc(50% - .3rem) !important;
         }
         [data-testid="stCheckbox"] label,
         [data-testid="stRadio"] label,
@@ -202,14 +210,21 @@ _CSS = """
     }
     [data-testid="stExpander"] summary { font-weight: 650; color: var(--lp-ink); }
     [data-testid="stTabs"] [role="tablist"] {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
         gap: .35rem;
         border-bottom: 1px solid var(--lp-line);
     }
     [data-testid="stTabs"] button[role="tab"] {
+        min-height: 42px;
+        max-width: 100%;
         border-radius: 10px 10px 0 0;
-        padding: .65rem 1rem;
+        padding: .6rem .9rem;
         color: var(--lp-muted);
         font-weight: 630;
+        white-space: normal;
+        line-height: 1.25;
     }
     [data-testid="stTabs"] button[aria-selected="true"] {
         color: #11776f;
@@ -325,23 +340,28 @@ _CSS = """
     }
     .lp-assessment-progress {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: .35rem;
+        grid-template-columns: repeat(5, minmax(7.5rem, 1fr));
+        gap: .55rem;
         width: 100%;
-        margin: .25rem 0 1rem;
+        margin: .55rem 0 1.25rem;
     }
     .lp-assessment-step {
         min-width: 0;
-        padding: .38rem .45rem;
+        min-height: 3rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: .35rem;
+        padding: .5rem .55rem;
         border: 1px solid #dce8e7;
         border-radius: 8px;
         background: #fff;
         color: #536c6d;
-        font-size: .82rem;
+        font-size: .8rem;
         font-weight: 650;
-        line-height: 1.2;
+        line-height: 1.25;
         text-align: center;
-        white-space: nowrap;
+        white-space: normal;
     }
     .lp-assessment-step.done { color: #155e49; background: #e8f4e9; }
     .lp-assessment-step.running { color: #075957; background: #e4f1ef; border-color: #0e7775; }
@@ -401,9 +421,13 @@ _CSS = """
     }
     @media (max-width: 760px) {
         .lp-decision-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .lp-assessment-step { font-size: .73rem; padding-inline: .2rem; }
+        .lp-assessment-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .lp-assessment-step { min-height: 2.8rem; font-size: .75rem; }
         .lp-why-line { grid-template-columns: 1.1rem minmax(0, 1fr); }
         .lp-why-line .lp-status-chip { grid-column: 2; justify-self: start; }
+    }
+    @media (min-width: 761px) and (max-width: 1120px) {
+        .lp-assessment-progress { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     .lp-why-line {
         display: grid;

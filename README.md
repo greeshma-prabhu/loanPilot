@@ -90,7 +90,7 @@ $env:GEMINI_API_KEY = "your-key"
 export GEMINI_API_KEY="your-key"
 ```
 
-Never commit the key. To override the default `gemini-2.5-flash` model, set
+Never commit the key. To override the default `gemini-3.8-flash` model, set
 `GEMINI_MODEL` in the environment using the same syntax. Gemini only extracts
 fields and writes explanations; it cannot change deterministic policy outcomes
 or sanction a loan.

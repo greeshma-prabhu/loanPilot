@@ -36,7 +36,7 @@ def list_applications(
     if filters.get("user_created_only"):
         clauses.extend(
             (
-                "a.persona_key IS NULL",
+                "(a.persona_key IS NULL OR a.application_id LIKE 'APP-SYNTH-%')",
                 "a.application_id NOT LIKE 'APP-HIST-%'",
                 "a.application_id NOT LIKE 'APP-CUSTOM-%'",
             )
@@ -1000,25 +1000,58 @@ def overview_metrics(store: SQLiteStore | None = None) -> dict[str, float | int 
 
 
 def overview_attention_cases(store: SQLiteStore | None = None) -> pd.DataFrame:
-    """List genuine user-created cases awaiting human review."""
+    """List operational review cases and synthetic examples needing attention."""
     return _store(store).query(
         """
         SELECT a.application_id, c.name AS applicant, a.submitted_at,
-               d.ai_recommendation,
-               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band
+               a.requested_amount, a.stage, d.ai_recommendation,
+               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band,
+               json_extract(d.ai_reasons_json, '$.attention_priority')
+                   AS attention_priority,
+               json_extract(d.ai_reasons_json, '$.attention_reason')
+                   AS attention_reason,
+               a.application_id LIKE 'APP-SYNTH-%' AS is_synthetic
         FROM cur_applications a
         JOIN cur_customers c ON c.customer_id = a.customer_id
         LEFT JOIN cur_decisions d ON d.application_id = a.application_id
-        WHERE a.stage = ?
-          AND a.persona_key IS NULL
+        WHERE (a.stage = ? OR (
+              a.application_id LIKE 'APP-SYNTH-%'
+              AND json_extract(d.ai_reasons_json, '$.attention_reason') IS NOT NULL
+              AND a.stage NOT IN ('Approved', 'Rejected', 'Disbursed (simulated)')
+        ))
+          AND (a.persona_key IS NULL OR a.application_id LIKE 'APP-SYNTH-%')
           AND a.application_id NOT LIKE 'APP-HIST-%'
           AND a.application_id NOT LIKE 'APP-CUSTOM-%'
-        ORDER BY CASE d.ai_recommendation
-                     WHEN 'Decline' THEN 0 WHEN 'Refer' THEN 1 ELSE 2
+        ORDER BY CASE json_extract(d.ai_reasons_json, '$.attention_priority')
+                     WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2
+                     ELSE 3
                  END,
                  a.submitted_at, a.application_id
         """,
         ("Human Review",),
+    )
+
+
+def overview_dashboard_records(store: SQLiteStore | None = None) -> pd.DataFrame:
+    """Return one row per operational or explicitly seeded synthetic case."""
+    return _store(store).query(
+        """
+        SELECT a.application_id, c.name AS applicant, a.requested_amount,
+               a.submitted_at, a.stage, a.persona_key,
+               d.human_decision, d.ai_recommendation,
+               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band,
+               json_extract(d.ai_reasons_json, '$.attention_reason')
+                   AS attention_reason,
+               CASE WHEN a.application_id LIKE 'APP-SYNTH-%'
+                    THEN 1 ELSE 0 END AS is_synthetic
+        FROM cur_applications a
+        JOIN cur_customers c ON c.customer_id = a.customer_id
+        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE (a.persona_key IS NULL OR a.application_id LIKE 'APP-SYNTH-%')
+          AND a.application_id NOT LIKE 'APP-HIST-%'
+          AND a.application_id NOT LIKE 'APP-CUSTOM-%'
+        ORDER BY a.submitted_at DESC, a.application_id
+        """
     )
 
 

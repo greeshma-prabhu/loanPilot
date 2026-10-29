@@ -20,6 +20,7 @@ def _show_forgot_password() -> None:
 
 def _sign_in_demo() -> None:
     """Start an explicitly configured demo-access session."""
+    st.session_state.pop("_signed_out", None)
     st.session_state["auth"] = {
         "name": "Demo Analyst",
         "role": "Guest (demo)",
@@ -49,6 +50,7 @@ def _credential_sign_in() -> None:
         None,
     )
     if user and verify_password(password, user.get("password_hash", "")):
+        st.session_state.pop("_signed_out", None)
         st.session_state["auth"] = {
             "name": user["display_name"],
             "email": user["email"],

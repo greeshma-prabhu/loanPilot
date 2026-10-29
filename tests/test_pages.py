@@ -92,7 +92,10 @@ def test_demo_sign_in_opens_authenticated_dashboard() -> None:
     app.button(key="login_demo_access").click().run()
 
     assert not app.exception
-    assert any(element.value == "Overview" for element in app.title)
+    assert any(
+        element.value.startswith("Welcome back")
+        for element in app.title
+    )
     assert any(link.label == "Applications" for link in app.get("page_link"))
 
 
@@ -144,20 +147,23 @@ def test_each_page_loads_for_empty_and_seeded_data(module, data_state, tmp_path,
     assert not app.exception, f"{module.__name__} with {data_state} data"
 
 
-def test_overview_contains_only_the_command_centre_sections(tmp_path) -> None:
-    """Keep the Overview focused on analytics, document updates, and attention."""
+def test_overview_contains_dashboard_sections_without_duplicate_sidebar_actions(tmp_path) -> None:
+    """Overview presents portfolio content without repeating sidebar navigation."""
     store = SQLiteStore(tmp_path / "overview-empty.db")
     create_schema(store)
     app = _render_page(overview, store).run()
     assert not app.exception
     labels = [item.value for item in app.subheader]
     assert labels == [
-        "Loan Portfolio Analytics",
-        "Latest Updates",
+        "Application Trends",
         "Needs Your Attention",
+        "Recent Applications",
+        "Latest Updates",
     ]
+    assert not any(item.value == "Quick Actions" for item in app.header)
+    assert not any(item.value == "Quick Actions" for item in app.subheader)
     assert any(
-        "Loan portfolio performance and lending intelligence." in item.value
+        "Your lending portfolio at a glance" in item.value
         for item in app.markdown
     )
     visible_text = "\n".join(
@@ -176,6 +182,13 @@ def test_overview_contains_only_the_command_centre_sections(tmp_path) -> None:
         "Remove all custom cases",
     ):
         assert removed not in visible_text
+    assert [metric.label for metric in app.metric] == [
+        "Total Applications",
+        "Approved Applications",
+        "Pending Applications",
+        "Rejected Applications",
+    ]
+    assert [metric.value for metric in app.metric] == ["0", "0", "0", "0"]
 
 
 def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None:

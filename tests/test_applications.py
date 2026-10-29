@@ -145,6 +145,24 @@ def test_opening_user_case_renders_all_tabs(seeded_store) -> None:
     ]
 
 
+def test_opening_case_from_assessment_renders_one_kyc_widget(seeded_store) -> None:
+    """The deep link selects Checks without rendering a duplicate identity radio."""
+    app = _render_app(seeded_store)
+    app.session_state["selected_application"] = "APP-NEW-APPLICATION-TEST"
+    app.session_state["case_kyc_open"] = "APP-NEW-APPLICATION-TEST"
+    app.run()
+
+    assert not app.exception
+    assert len(
+        [
+            radio
+            for radio in app.radio
+            if radio.key == "case_kyc_method_APP-NEW-APPLICATION-TEST"
+        ]
+    ) == 1
+    assert "case_kyc_open" not in app.session_state
+
+
 def test_case_opens_assessment_and_preserves_selected_application(seeded_store) -> None:
     """The assessment button switches pages with the selected case preserved."""
     app = _render_navigation_app(seeded_store).run()

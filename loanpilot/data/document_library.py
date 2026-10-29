@@ -21,7 +21,7 @@ MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 200
 MAX_EXTRACTED_TEXT_CHARS = 500_000
 MAX_SEARCH_CANDIDATES = 100
-SUMMARY_VERSION = 2
+SUMMARY_VERSION = 3
 _DOCUMENT_ID = re.compile(r"[0-9a-f]{32}\Z")
 _PAGE_NUMBER = re.compile(r"^(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?$", re.IGNORECASE)
 _DOCUMENT_METADATA = re.compile(
@@ -31,6 +31,13 @@ _DOCUMENT_METADATA = re.compile(
 _DEMO_BOILERPLATE = re.compile(
     r"\b(?:fictional|synthetic)\s+(?:demo|demonstration)\s+"
     r"(?:document|sample|policy)\b|\bfor\s+demonstration\s+only\b",
+    re.IGNORECASE,
+)
+_DEMO_DISCLAIMER = re.compile(
+    r"\bnot an actual bank policy\b|\bnot legal advice\b|"
+    r"\bnot a real (?:customer|loan decision|sanction)\b|"
+    r"\bproduction policies require approval\b|"
+    r"\bthis guide alone does not approve the case\b",
     re.IGNORECASE,
 )
 _LEGACY_SUMMARY_MARKERS = re.compile(
@@ -132,7 +139,12 @@ def is_document_summary_current(document: dict[str, object]) -> bool:
     summary = str(document.get("summary_text") or "").strip()
     headline = str(document.get("summary_headline") or "").strip()
     combined = f"{headline}\n{summary}"
-    if not summary or not headline or _LEGACY_SUMMARY_MARKERS.search(combined):
+    if (
+        not summary
+        or not headline
+        or _LEGACY_SUMMARY_MARKERS.search(combined)
+        or _DEMO_DISCLAIMER.search(combined)
+    ):
         return False
     if any(
         unicodedata.category(character) in {"Cc", "Cf", "Cs"}
@@ -175,6 +187,11 @@ def _extractive_summary(text: str) -> tuple[str, str] | None:
 
     candidates: list[tuple[str, list[str], set[str]]] = []
     for sentence in sentences:
+        if (
+            _LEGACY_SUMMARY_MARKERS.search(sentence)
+            or _DEMO_DISCLAIMER.search(sentence)
+        ):
+            continue
         words = re.findall(r"[a-z][a-z'-]{2,}", sentence.casefold())
         terms = [
             word.strip("-'")
@@ -428,6 +445,7 @@ def summarize_library_document(
     store: SQLiteStore,
     *,
     retry: bool = False,
+    prefer_local: bool = False,
 ) -> dict[str, object]:
     """Persist one grounded Gemini summary or a local extractive fallback."""
     document = get_library_document(document_id, store)
@@ -484,6 +502,33 @@ def summarize_library_document(
             raise DocumentNotFoundError("The selected document is no longer in the library.")
         return result
 
+    if prefer_local:
+        if local_fallback is None:
+            _store_document_summary(
+                document_id,
+                store,
+                "Failed",
+                "",
+                "",
+                "",
+                "A concise summary could not be extracted from the available PDF text.",
+            )
+        else:
+            headline, summary = local_fallback
+            _store_document_summary(
+                document_id,
+                store,
+                "Completed",
+                "Local extractive",
+                headline,
+                summary,
+                "",
+            )
+        result = get_library_document(document_id, store)
+        if result is None:
+            raise DocumentNotFoundError("The selected document is no longer in the library.")
+        return result
+
     claim_status = summary_status
     claimed = store.execute(
         """
@@ -518,8 +563,18 @@ def summarize_library_document(
         payload = generate_json_with_gemini(prompt)
         headline = clean_pdf_text(str(payload.get("headline") or ""))
         summary = clean_pdf_text(str(payload.get("summary") or ""))
+        summary = _limit_summary_sentences(
+            " ".join(
+                sentence
+                for sentence in re.split(r"(?<=[.!?])\s+", summary)
+                if sentence.strip() and not _DEMO_DISCLAIMER.search(sentence)
+            ),
+            4,
+        )
         if not isinstance(headline, str) or not headline.strip():
             raise ValueError("Gemini returned no summary headline.")
+        if _DEMO_DISCLAIMER.search(headline):
+            raise ValueError("Gemini returned a demo disclaimer instead of a headline.")
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("Gemini returned no summary text.")
         if not _has_meaningful_text(headline + " " + summary):

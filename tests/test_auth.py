@@ -66,6 +66,19 @@ def test_credentials_accept_configured_username() -> None:
     assert app.session_state["auth"]["method"] == "credentials"
 
 
+def test_login_after_sign_out_clears_the_signed_out_guard() -> None:
+    """A fresh valid credential sign-in is allowed after a prior logout."""
+    app = _login_app([])
+    app.session_state["_signed_out"] = True
+    app.run()
+    app.text_input(key="login_username").set_value("greeshma")
+    app.text_input(key="login_password").set_value(_TEST_PASSWORD)
+    next(button for button in app.button if button.label == "Sign in").click().run()
+
+    assert app.session_state["auth"]["method"] == "credentials"
+    assert "_signed_out" not in app.session_state
+
+
 def test_credential_sign_in_opens_authenticated_dashboard() -> None:
     """Valid username/password submission reaches the product dashboard."""
     user = {
@@ -91,7 +104,10 @@ def test_credential_sign_in_opens_authenticated_dashboard() -> None:
 
     assert not app.exception
     assert app.session_state["auth"]["method"] == "credentials"
-    assert any(element.value == "Overview" for element in app.title)
+    assert any(
+        element.value.startswith("Welcome back")
+        for element in app.title
+    )
     assert any(link.label == "Applications" for link in app.get("page_link"))
 
 
@@ -214,17 +230,8 @@ def test_sign_out_returns_to_login_page() -> None:
     """The sign-out callback clears identity and routes to the login page."""
     script = (
         "import streamlit as st\n"
-        "from app import LOGIN_PAGE, _sign_out\n"
-        "from loanpilot.pages import login\n"
-        "login.configured_users = lambda: []\n"
-        "login.demo_access_enabled = lambda: True\n"
-        "overview = st.Page(lambda: st.write('Overview'), title='Overview', default=True)\n"
-        "nav = st.navigation({'Operate': [overview], 'Access': [LOGIN_PAGE]}, position='hidden')\n"
-        "if st.session_state.get('auth'):\n"
-        "    st.button('Sign out', on_click=_sign_out, args=(LOGIN_PAGE,))\n"
-        "else:\n"
-        "    login.render()\n"
-        "nav.run()\n"
+        "from app import main\n"
+        "main()\n"
     )
     app = AppTest.from_string(script)
     app.session_state["auth"] = {
@@ -232,11 +239,17 @@ def test_sign_out_returns_to_login_page() -> None:
         "role": "Credit Analyst",
         "method": "credentials",
     }
+    app.session_state["login_username"] = "stale"
+    app.session_state["auth_failed_attempts"] = 4
     app.run()
-    app.button[0].click().run()
+    app.button(key="sign_out").click().run()
     assert "auth" not in app.session_state
-    assert app.session_state["_auth_cookie_action"] == "delete"
+    assert app.session_state["login_username"] == ""
+    assert app.session_state["login_password"] == ""
+    assert "auth_failed_attempts" not in app.session_state
+    assert app.session_state["_signed_out"] is True
     assert any(button.label == "Continue with demo access" for button in app.button)
+    assert not app.get("page_link")
 
 
 def test_password_hash_cli_output_is_verifiable(monkeypatch, capsys) -> None:
@@ -342,6 +355,41 @@ def test_cookie_gate_restores_identity_after_refresh_and_navigation() -> None:
     del app.session_state["auth"]
     app.run()
     assert app.session_state["auth"]["name"] == "Demo Analyst"
+
+
+def test_signed_out_cookie_blocks_stale_auth_cookie_after_refresh() -> None:
+    """A logout marker prevents a lagging auth cookie from restoring a session."""
+    from app import SIGNED_OUT_COOKIE_NAME
+
+    script = (
+        "import streamlit as st\n"
+        "from app import _sync_auth_cookie, SIGNED_OUT_COOKIE_NAME\n"
+        "from loanpilot.auth.session import AUTH_COOKIE_NAME, create_session_token\n"
+        "from loanpilot.auth import session\n"
+        "session.demo_access_enabled = lambda: True\n"
+        "class FakeCookieManager:\n"
+        "    def __init__(self):\n"
+        "        self.cookies = st.session_state.setdefault('browser_cookies', {})\n"
+        "    def get(self, name):\n"
+        "        return self.cookies.get(name)\n"
+        "    def set(self, name, value, **kwargs):\n"
+        "        self.cookies[name] = value\n"
+        "    def delete(self, name, **kwargs):\n"
+        "        self.cookies.pop(name, None)\n"
+        "manager = FakeCookieManager()\n"
+        "stale_token = create_session_token("
+        "{'name': 'Demo Analyst', 'role': 'Guest (demo)', 'method': 'demo'})\n"
+        "st.session_state['browser_cookies'][AUTH_COOKIE_NAME] = stale_token\n"
+        "st.session_state['_auth_cookie_action'] = 'delete'\n"
+        "_sync_auth_cookie(manager, request_cookies=dict(manager.cookies), request_url='https://loanpilot.test')\n"
+        "st.session_state['browser_cookies'][AUTH_COOKIE_NAME] = stale_token\n"
+        "_sync_auth_cookie(manager, request_cookies=dict(manager.cookies), request_url='https://loanpilot.test')\n"
+        "st.write(bool(st.session_state.get('auth')))\n"
+    )
+    app = AppTest.from_string(script).run()
+    assert not app.exception
+    assert app.session_state["browser_cookies"][SIGNED_OUT_COOKIE_NAME] == "1"
+    assert "auth" not in app.session_state
 
 
 def test_repository_has_no_embedded_password_or_default_scrypt_hash() -> None:

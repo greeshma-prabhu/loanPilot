@@ -406,9 +406,12 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
     st.caption("Policy outcomes and financial calculations are deterministic; language output cannot change them.")
     render_decision_card(application_id, store)
     render_human_review_button(application_id)
-    render_why(application_id, store)
-    st.markdown("### Key numbers")
-    render_key_numbers(application_id, store)
+    with st.container(border=True):
+        st.subheader("Policy rationale")
+        render_why(application_id, store, compact=True)
+    with st.container(border=True):
+        st.subheader("Key numbers")
+        render_key_numbers(application_id, store)
     if result.get("recommendation") in {"Refer", "Decline"}:
         counterfactual = result.get("counterfactual", {})
         clauses = result.get("policy", {}).get("clauses", [])
@@ -451,16 +454,17 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
             )
         else:
             change_text = counterfactual.get("note", "Review the triggering policy checks.")
-        st.markdown("### What would change this")
-        st.write(change_text)
-        if kyc_clause.get("status") == "refer":
-            st.button(
-                "Complete eKYC (demo)",
-                key=f"assessment_open_kyc_{application_id}",
-                on_click=_open_kyc_case,
-                args=(application_id,),
-                width="stretch",
-            )
+        with st.container(border=True):
+            st.subheader("What would change this")
+            st.write(change_text)
+            if kyc_clause.get("status") == "refer":
+                st.button(
+                    "Complete eKYC (demo)",
+                    key=f"assessment_open_kyc_{application_id}",
+                    on_click=_open_kyc_case,
+                    args=(application_id,),
+                )
+    st.divider()
     _render_library_references(result, store)
     _render_details(result)
 

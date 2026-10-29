@@ -7,16 +7,20 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from loanpilot.components import status_chip
+from loanpilot.components import fmt_inr, status_chip
 from loanpilot.data.document_library import (
     format_document_upload_time,
     is_document_summary_current,
     list_library_documents,
+    summarize_library_document,
 )
-from loanpilot.data.queries import overview_attention_cases
+from loanpilot.data.queries import (
+    overview_attention_cases,
+    overview_dashboard_records,
+)
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.theme import render_disclaimer, render_header
+from loanpilot.theme import format_datetime, render_disclaimer, render_header
 
 _STATUSES = ("Approved", "Rejected", "Pending")
 _STATUS_COLORS = {
@@ -28,55 +32,61 @@ _APPROVED_STAGES = {"Approved", "Sanction", "Disbursed (simulated)"}
 _APPROVAL_DECISIONS = {"Approve", "Approve with conditions", "Modify terms"}
 
 
+def _display_text(value: object, default: str = "") -> str:
+    """Convert optional database values without exposing pandas null markers."""
+    if value is None or pd.isna(value):
+        return default
+    return str(value).strip() or default
+
+
+def _format_optional_amount(value: object) -> str:
+    """Format a requested amount when present, otherwise show a clear fallback."""
+    amount = pd.to_numeric(value, errors="coerce")
+    return fmt_inr(float(amount)) if pd.notna(amount) else "Unavailable"
+
+
 def _portfolio_records(store: SQLiteStore) -> pd.DataFrame:
-    """Fetch one persisted row per application with its current workflow stage."""
-    records = store.query(
-        """
-        SELECT a.application_id, a.submitted_at, a.stage, d.human_decision
-        FROM cur_applications a
-        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
-        WHERE a.persona_key IS NULL
-          AND a.application_id NOT LIKE 'APP-HIST-%'
-          AND a.application_id NOT LIKE 'APP-CUSTOM-%'
-        ORDER BY a.application_id
-        """
-    )
+    """Fetch operational and explicitly seeded synthetic application rows."""
+    records = overview_dashboard_records(store)
     if records.empty:
         return pd.DataFrame(
             columns=[
                 "application_id",
+                "applicant",
+                "requested_amount",
                 "submitted_at",
                 "stage",
                 "human_decision",
+                "ai_recommendation",
+                "risk_band",
+                "attention_reason",
+                "is_synthetic",
                 "date",
                 "year",
                 "month",
                 "status",
             ]
         )
-
     records = records.drop_duplicates("application_id").copy()
-    # Use the calendar date persisted at intake; decision dates do not move a
-    # case into another month when the current status changes.
     records["date"] = pd.to_datetime(
         records["submitted_at"].astype(str).str.slice(0, 10),
         format="%Y-%m-%d",
         errors="coerce",
     )
-    records = records.loc[records["date"].notna()].copy()
-    records["year"] = records["date"].dt.year.astype(int)
-    records["month"] = records["date"].dt.month.astype(int)
-
-    # Portfolio periods are application-submission cohorts; each cohort reflects
-    # the current persisted stage, so later decisions do not shift its month.
+    records["year"] = records["date"].dt.year.astype("Int64")
+    records["month"] = records["date"].dt.month.astype("Int64")
     stages = records["stage"].fillna("").astype(str)
     decisions = records["human_decision"].fillna("").astype(str)
     records["status"] = "Pending"
-    approved = stages.isin({"Approved", "Disbursed (simulated)"}) | (
-        stages.eq("Sanction") & decisions.isin(_APPROVAL_DECISIONS)
+    approved = stages.isin(_APPROVED_STAGES) | (
+        stages.eq("Sanction")
+        & decisions.isin(_APPROVAL_DECISIONS)
     )
     records.loc[approved, "status"] = "Approved"
-    records.loc[stages.eq("Rejected"), "status"] = "Rejected"
+    records.loc[
+        stages.eq("Rejected") | decisions.isin({"Reject", "Decline"}),
+        "status",
+    ] = "Rejected"
     return records
 
 
@@ -92,7 +102,8 @@ def _monthly_counts(records: pd.DataFrame, year: int) -> pd.DataFrame:
     if records.empty:
         return months
     actual = (
-        records.loc[records["year"] == year]
+        records.loc[records["year"].eq(year).fillna(False)]
+        .dropna(subset=["month"])
         .groupby(["month", "status"], as_index=False)["application_id"]
         .nunique()
         .rename(columns={"application_id": "count"})
@@ -103,82 +114,137 @@ def _monthly_counts(records: pd.DataFrame, year: int) -> pd.DataFrame:
         how="left",
     )
     counts["count"] = counts["count"].fillna(0).astype(int)
-    counts["period"] = counts["month"].map(lambda month: calendar.month_abbr[month])
+    counts["period"] = counts["month"].map(
+        lambda month: calendar.month_abbr[int(month)]
+    )
     return counts
 
 
 def _render_portfolio_analytics(store: SQLiteStore) -> None:
-    """Render the monthly status chart and the selected-year status summary."""
-    st.subheader("Loan Portfolio Analytics")
+    """Render dated monthly volumes and the persisted portfolio status mix."""
+    st.subheader("Application Trends")
     records = _portfolio_records(store)
     if records.empty:
-        st.info("Portfolio analytics will appear when dated loan applications are available.")
+        st.info("Application trends will appear when applications are submitted.")
         return
 
-    years = sorted(records["year"].unique().tolist(), reverse=True)
-    selected_year = st.selectbox(
-        "Application year",
-        years,
-        format_func=str,
-        key="overview_portfolio_year",
-    )
-    monthly = _monthly_counts(records, int(selected_year))
-    monthly["period"] = pd.Categorical(
-        monthly["period"],
-        categories=[calendar.month_abbr[month] for month in range(1, 13)],
-        ordered=True,
+    dated = records.dropna(subset=["year", "month"])
+    status_counts = (
+        records.groupby("status")["application_id"]
+        .nunique()
+        .reindex(_STATUSES, fill_value=0)
+        .rename("count")
+        .reset_index()
     )
     with st.container(key="overview_portfolio_layout"):
-        chart_column, summary_column = st.columns([3, 1])
-        with chart_column:
-            chart = px.bar(
-                monthly,
-                x="period",
-                y="count",
+        trend_column, distribution_column = st.columns([1.55, 1])
+        with trend_column:
+            st.markdown("#### Monthly volume")
+            if dated.empty:
+                st.info("Monthly volume is unavailable because application dates are missing or invalid.")
+            else:
+                years = sorted(dated["year"].dropna().astype(int).unique().tolist(), reverse=True)
+                selected_year = st.selectbox(
+                    "Application year",
+                    years,
+                    format_func=str,
+                    key="overview_portfolio_year",
+                )
+                monthly = _monthly_counts(records, int(selected_year))
+                monthly["period"] = pd.Categorical(
+                    monthly["period"],
+                    categories=[calendar.month_abbr[month] for month in range(1, 13)],
+                    ordered=True,
+                )
+                chart = px.bar(
+                    monthly,
+                    x="period",
+                    y="count",
+                    color="status",
+                    custom_data=["period", "status", "count"],
+                    category_orders={
+                        "period": [calendar.month_abbr[month] for month in range(1, 13)],
+                        "status": list(_STATUSES),
+                    },
+                    color_discrete_map=_STATUS_COLORS,
+                    labels={
+                        "period": "Application month",
+                        "count": "Applications",
+                        "status": "",
+                    },
+                )
+                chart.update_traces(
+                    hovertemplate="%{x}<br>%{customdata[1]}: %{customdata[2]}<extra></extra>"
+                )
+                chart.update_layout(
+                    barmode="stack",
+                    showlegend=True,
+                    legend={"orientation": "h", "y": 1.12, "x": 0},
+                    yaxis_title="Applications",
+                    xaxis_title="",
+                    margin={"l": 8, "r": 8, "t": 24, "b": 8},
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                )
+                chart.update_yaxes(rangemode="tozero", dtick=1)
+                st.plotly_chart(
+                    chart,
+                    width="stretch",
+                    key="overview_portfolio_monthly",
+                )
+        with distribution_column:
+            st.markdown("#### Status distribution")
+            distribution = px.pie(
+                status_counts,
+                names="status",
+                values="count",
+                hole=0.62,
                 color="status",
-                custom_data=["period", "status", "count"],
-                category_orders={
-                    "period": [calendar.month_abbr[month] for month in range(1, 13)],
-                    "status": list(_STATUSES),
-                },
                 color_discrete_map=_STATUS_COLORS,
-                labels={"period": "Application month", "count": "Applications", "status": ""},
             )
-            chart.update_traces(
-                hovertemplate="%{x}<br>%{customdata[1]}: %{customdata[2]}<extra></extra>"
-            )
-            chart.update_layout(
-                barmode="stack",
-                showlegend=False,
-                yaxis_title="Applications",
-                xaxis_title="",
-                margin={"l": 8, "r": 8, "t": 12, "b": 8},
+            distribution.update_layout(
+                showlegend=True,
+                legend={"orientation": "h", "y": -0.08, "x": 0},
+                margin={"l": 8, "r": 8, "t": 10, "b": 28},
                 plot_bgcolor="white",
                 paper_bgcolor="white",
             )
-            chart.update_yaxes(rangemode="tozero", dtick=1)
             st.plotly_chart(
-                chart,
+                distribution,
                 width="stretch",
-                key="overview_portfolio_monthly",
+                key="overview_status_distribution",
             )
-        with summary_column:
-            st.markdown(f"#### Status summary · {selected_year}")
-            totals = monthly.groupby("status", observed=False)["count"].sum()
-            for status in _STATUSES:
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;justify-content:space-between;'
-                    f'gap:.5rem;padding:.7rem 0;border-bottom:1px solid #e1e7e9">'
-                    f'<span><span style="color:{_STATUS_COLORS[status]}">●</span> {status}</span>'
-                    f'<strong>{int(totals.get(status, 0))}</strong></div>',
-                    unsafe_allow_html=True,
-                )
-            st.caption(f"{int(monthly['count'].sum())} applications in this year")
+    undated_count = int(records["date"].isna().sum())
+    if undated_count:
+        st.caption(
+            "Applications with missing or invalid dates are excluded from monthly trends."
+        )
 
 
 def _render_latest_updates(store: SQLiteStore) -> None:
-    """Display persisted document summaries, newest uploaded source first."""
+    """Prepare recent document summaries here and display the persisted results."""
     st.subheader("Latest Updates")
+    documents = list_library_documents(store)
+    summaries_to_prepare = []
+    for document in documents[:5]:
+        summary_status = str(document.get("summary_status", "Not requested"))
+        failed_gemini_summary = (
+            summary_status == "Failed"
+            and "gemini" in str(document.get("summary_error") or "").casefold()
+        )
+        if (
+            document.get("processing_status") == "Processed"
+            and (
+                summary_status in {"Not requested", "Completed"}
+                or failed_gemini_summary
+            )
+            and not is_document_summary_current(document)
+        ):
+            summaries_to_prepare.append(document)
+    if summaries_to_prepare:
+        with st.spinner("Preparing summaries for recent documents..."):
+            for document in summaries_to_prepare:
+                summarize_library_document(str(document["document_id"]), store)
     documents = list_library_documents(store)
     updates = [
         document
@@ -189,11 +255,18 @@ def _render_latest_updates(store: SQLiteStore) -> None:
         st.info("Document summaries will appear here after a PDF is uploaded.")
         return
 
-    for update in updates:
+    for update in updates[:5]:
         status = str(update.get("summary_status", "Not requested"))
         with st.container(border=True):
             if is_document_summary_current(update):
                 headline = escape(str(update.get("summary_headline", "")))
+                summary_method = str(update.get("summary_method") or "")
+                summary_label = (
+                    "AI summary · Gemini"
+                    if summary_method == "Gemini"
+                    else "Extractive summary · local fallback"
+                )
+                st.caption(summary_label)
                 st.markdown(f"**{headline}**")
                 summary = escape(str(update.get("summary_text", "")))
                 st.markdown(
@@ -201,8 +274,10 @@ def _render_latest_updates(store: SQLiteStore) -> None:
                     unsafe_allow_html=True,
                 )
             elif status == "Completed":
-                st.caption("Summary needs refreshing")
-                st.write("Refresh this summary from the Document Library.")
+                st.caption("Summary is unavailable")
+                st.write(
+                    "A concise summary could not be extracted from the available PDF text."
+                )
             else:
                 status_label = "Processing" if status == "Processing" else "Failed"
                 st.caption(status_label)
@@ -221,16 +296,44 @@ def _open_case(application_id: str) -> None:
     st.switch_page(OPERATE_PAGES["applications"])
 
 
+def _open_human_review(application_id: str) -> None:
+    """Select a case and open the Human Review worklist."""
+    from loanpilot.navigation import OPERATE_PAGES
+
+    st.session_state["selected_application"] = application_id
+    st.session_state["review_open"] = application_id
+    st.switch_page(OPERATE_PAGES["human_review"])
+
+
+def _render_kpis(records: pd.DataFrame) -> None:
+    """Render portfolio totals from the same status rows used by the charts."""
+    counts = records["status"].value_counts() if not records.empty else {}
+    metrics = (
+        ("Total Applications", len(records)),
+        ("Approved Applications", int(counts.get("Approved", 0))),
+        ("Pending Applications", int(counts.get("Pending", 0))),
+        ("Rejected Applications", int(counts.get("Rejected", 0))),
+    )
+    with st.container(key="overview_kpis"):
+        columns = st.columns(4)
+        for column, (label, value) in zip(columns, metrics, strict=True):
+            column.metric(label, f"{value:,}")
+
+
 def _render_attention(store: SQLiteStore) -> None:
-    """Show high-attention cases with direct links to their application records."""
+    """Show supported attention reasons and direct operational actions."""
     cases = overview_attention_cases(store)
     if cases.empty:
-        st.info("No cases are currently awaiting human review.")
+        st.info("No applications currently need a follow-up.")
         return
     for _, case in cases.iterrows():
-        recommendation = str(case.get("ai_recommendation") or "").strip()
-        risk_band = str(case.get("risk_band") or "").strip()
-        priority = risk_band or "Unspecified"
+        recommendation = _display_text(case.get("ai_recommendation"))
+        risk_band = _display_text(case.get("risk_band"))
+        priority = (
+            _display_text(case.get("attention_priority"))
+            or risk_band
+            or "Unspecified"
+        )
         priority_kind = (
             "danger"
             if priority.casefold() in {"high", "critical", "very high"}
@@ -243,22 +346,29 @@ def _render_attention(store: SQLiteStore) -> None:
             utc=True,
             errors="coerce",
         )
+        stage = _display_text(case.get("stage"), "Unknown")
         days_pending = (
             max(0, (pd.Timestamp.now(tz="UTC") - submitted_at).days)
             if not pd.isna(submitted_at)
             else None
         )
         with st.container(border=True):
-            details, action = st.columns([5, 1])
+            details, action = st.columns([5, 1.2])
             with details:
-                st.markdown(f"**{escape(str(case['applicant']))}**")
-                issue = (
-                    f"AI recommendation: {escape(recommendation)}"
-                    if recommendation
-                    else "Awaiting an assessment recommendation"
+                applicant = _display_text(
+                    case.get("applicant"),
+                    "Applicant unavailable",
                 )
+                st.markdown(f"**{escape(applicant)}**")
+                issue = _display_text(case.get("attention_reason"))
+                if not issue:
+                    issue = (
+                        f"AI recommendation: {recommendation}"
+                        if recommendation
+                        else "Awaiting an assessment recommendation"
+                    )
                 st.markdown(
-                    f'<div class="lp-attention-issue">{issue}</div>',
+                    f'<div class="lp-attention-issue">{escape(issue)}</div>',
                     unsafe_allow_html=True,
                 )
                 age = (
@@ -268,7 +378,9 @@ def _render_attention(store: SQLiteStore) -> None:
                 )
                 st.markdown(
                     f'<div class="lp-attention-meta">'
-                    f'<span>Stage · Human Review</span>'
+                    f'<span>Stage · {escape(stage)}</span>'
+                    f'<span>{escape(_display_text(case.get("application_id"), "ID unavailable"))}</span>'
+                    f'<span>Requested · {escape(_format_optional_amount(case.get("requested_amount")))}</span>'
                     f'<span>{age}</span>'
                     f'<span>Priority · {escape(priority)}</span>'
                     f'</div>',
@@ -280,25 +392,92 @@ def _render_attention(store: SQLiteStore) -> None:
                     unsafe_allow_html=True,
                 )
                 st.button(
-                    "Open",
-                    key=f"overview_open_{case['application_id']}",
+                    "Open case",
+                    key=f"overview_open_{_display_text(case.get('application_id'), 'unknown')}",
                     on_click=_open_case,
-                    args=(str(case["application_id"]),),
+                    args=(_display_text(case.get("application_id")),),
+                    width="stretch",
+                )
+                if stage == "Human Review":
+                    st.button(
+                        "Human Review",
+                        key=f"overview_review_{_display_text(case.get('application_id'), 'unknown')}",
+                        on_click=_open_human_review,
+                        args=(_display_text(case.get("application_id")),),
+                        width="stretch",
+                    )
+
+
+def _render_recent_applications(records: pd.DataFrame) -> None:
+    """Display five most recently submitted cases with direct case navigation."""
+    st.subheader("Recent Applications")
+    if records.empty:
+        st.info("Submitted applications will appear here.")
+        return
+    recent = records.sort_values(
+        ["date", "submitted_at", "application_id"],
+        ascending=[False, False, False],
+        na_position="last",
+    ).head(5)
+    for _, application in recent.iterrows():
+        stage = _display_text(application.get("stage"), "Unknown")
+        status = _display_text(application.get("status"), "Pending")
+        status_kind = (
+            "success" if status == "Approved"
+            else "danger" if status == "Rejected"
+            else "warning"
+        )
+        risk = _display_text(application.get("risk_band"))
+        attention = _display_text(application.get("attention_reason"))
+        label = risk or ("Needs attention" if attention else "No attention flag")
+        with st.container(border=True):
+            details, action = st.columns([5, 1])
+            with details:
+                applicant = _display_text(
+                    application.get("applicant"),
+                    "Applicant unavailable",
+                )
+                st.markdown(f"**{escape(applicant)}**")
+                st.caption(
+                    f"{escape(_display_text(application.get('application_id'), 'ID unavailable'))} · "
+                    f"{escape(_format_optional_amount(application.get('requested_amount')))} · "
+                    f"{format_datetime(application.get('submitted_at'))}"
+                )
+                st.markdown(
+                    f'{status_chip(status, status_kind)} '
+                    f'{status_chip(stage, "info")} '
+                    f'{status_chip(label, "warning" if attention else "neutral")}',
+                    unsafe_allow_html=True,
+                )
+                if int(application.get("is_synthetic") or 0):
+                    st.caption("Synthetic demo record · not a real customer or decision")
+            with action:
+                st.button(
+                    "Open",
+                    key=f"overview_recent_open_{_display_text(application.get('application_id'), 'unknown')}",
+                    on_click=_open_case,
+                    args=(_display_text(application.get("application_id")),),
                     width="stretch",
                 )
 
 
 def render(store: SQLiteStore | None = None) -> None:
-    """Render the focused portfolio command centre."""
+    """Render the persisted application dashboard and its operational actions."""
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
+    records = _portfolio_records(store)
+    identity = st.session_state.get("auth") or {}
+    first_name = str(identity.get("name") or "").strip().split(" ", 1)[0]
+    title = f"Welcome back, {first_name}" if first_name else "Welcome back"
     render_header(
-        "Overview",
-        "Loan portfolio performance and lending intelligence.",
+        title,
+        "Your lending portfolio at a glance. Review application trends and take action on cases that need attention.",
         "OPERATE  /  COMMAND CENTRE",
     )
+    _render_kpis(records)
     _render_portfolio_analytics(store)
-    _render_latest_updates(store)
     st.subheader("Needs Your Attention")
     _render_attention(store)
+    _render_recent_applications(records)
+    _render_latest_updates(store)

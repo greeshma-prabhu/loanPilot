@@ -100,6 +100,7 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
                 "Human decision",
                 "Risk band",
                 "Age (days)",
+                "Record type",
             ]
         )
     return pd.DataFrame(
@@ -111,13 +112,26 @@ def _list_frame(applications: pd.DataFrame) -> pd.DataFrame:
             "Human decision": applications["human_decision"].fillna("—"),
             "Risk band": applications["risk_band"].fillna("—"),
             "Age (days)": applications["submitted_at"].map(_age_in_days),
+            "Record type": applications.apply(
+                lambda row: "Synthetic demo"
+                if str(row.get("application_id", "")).startswith("APP-SYNTH-")
+                or bool(row.get("persona_key"))
+                else "User submitted",
+                axis=1,
+            ),
         }
     )
 
 
 def _render_application_table(frame: pd.DataFrame) -> None:
     """Render a compact, accessible table with consistent text status chips."""
-    status_columns = {"Stage", "AI recommendation", "Human decision", "Risk band"}
+    status_columns = {
+        "Stage",
+        "AI recommendation",
+        "Human decision",
+        "Risk band",
+        "Record type",
+    }
     rows = []
     for _, row in frame.iterrows():
         cells = []
@@ -178,7 +192,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
     """Render searchable user-created application records."""
     render_header(
         "Applications",
-        "Search submitted applications, review their status, and open a case workspace.",
+        "Search submitted applications, review their status, and open a case workspace. Synthetic demo examples are labeled.",
         "OPERATE  /  PORTFOLIO",
     )
     all_rows = list_applications({"user_created_only": True}, store)
@@ -967,6 +981,11 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     )
     if str(application_id).startswith("APP-CUSTOM-"):
         st.markdown(status_chip("Custom case", "info"), unsafe_allow_html=True)
+    if str(application_id).startswith("APP-SYNTH-"):
+        st.markdown(
+            status_chip("Synthetic demo · not a real decision", "info"),
+            unsafe_allow_html=True,
+        )
     if application["stage"] == "Rejected":
         st.markdown(
             f"{status_chip('Rejected', 'danger')} "
@@ -992,8 +1011,8 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
     with st.expander("Technical case reference"):
         st.code(str(application_id))
     stage_tracker(str(application["stage"]))
-    if st.session_state.get("case_kyc_open") == application_id:
-        _render_kyc_panel(application_id, store)
+    open_kyc = st.session_state.get("case_kyc_open") == application_id
+    if open_kyc:
         st.session_state.pop("case_kyc_open", None)
 
     tabs = st.tabs(
@@ -1006,7 +1025,8 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
             "Decision",
             "Sanction & Disbursement",
             "Audit Log",
-        ]
+        ],
+        default="Checks" if open_kyc else "Summary",
     )
     with tabs[0]:
         _render_summary(application, documents)

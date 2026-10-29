@@ -70,6 +70,22 @@ def test_app_runs_without_exception() -> None:
     assert any(button.label == "Start demo with Priya Menon" for button in app.button)
 
 
+def test_know_more_opens_explanatory_navigation() -> None:
+    """The sidebar Know more action opens its explanatory-page dialog."""
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.button(key="open_know_more").click().run()
+    assert not app.exception
+    assert any("Explore how this demonstration" in item.value for item in app.caption)
+
+
+def test_know_more_pages_are_registered_in_hidden_navigation() -> None:
+    """Dialog links target pages registered with Streamlit navigation."""
+    from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION
+
+    registered_pages = {page for pages in NAVIGATION.values() for page in pages}
+    assert set(KNOW_MORE_PAGES.values()).issubset(registered_pages)
+
+
 @pytest.mark.parametrize(
     ("module", "data_state"),
     [(module, state) for module in PAGE_MODULES for state in ("empty", "seeded")],
@@ -96,14 +112,36 @@ def test_overview_empty_state_has_single_start_demo_action(tmp_path) -> None:
 
 
 def test_human_review_empty_assessments_points_to_overview(seeded_store) -> None:
-    """The reviewer queue directs presenters to the Overview preparation action."""
+    """The empty review queue directs presenters to AI Assessment."""
     app = _render_page(
         next(module for module in PAGE_MODULES if module.__name__.endswith(".human_review")),
         seeded_store,
     ).run()
     assert not app.exception
-    assert any("No AI assessments are saved yet" in item.value for item in app.info)
-    assert any(button.label == "Prepare demo on Overview" for button in app.button)
+    assert any(
+        "Nothing waiting for review. Run an assessment first." in item.value
+        for item in app.info
+    )
+    assert any(button.label == "Open AI Assessment" for button in app.button)
+
+
+def test_synthetic_data_banner_is_only_shown_on_about(seeded_store) -> None:
+    """The synthetic-data statement is absent globally and retained in About & FAQ."""
+    text = "Demonstration with synthetic data. Not a real bank system or credit decision."
+    for module in PAGE_MODULES:
+        app = _render_page(module, seeded_store).run()
+        visible_text = "\n".join(
+            str(element.value)
+            for name in (
+                "title", "header", "subheader", "caption", "markdown",
+                "info", "warning", "success", "error",
+            )
+            for element in getattr(app, name, [])
+        )
+        if module is about_faq:
+            assert text in visible_text
+        else:
+            assert text not in visible_text, module.__name__
 
 
 def test_prepare_demo_skips_priya_and_is_idempotent(seeded_store, monkeypatch) -> None:

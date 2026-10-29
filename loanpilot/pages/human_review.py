@@ -3,32 +3,42 @@
 import json
 from datetime import datetime
 from html import escape
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from loanpilot import config
 from loanpilot.agent.policy_engine import pricing_rate
 from loanpilot.agent.sanction import (
     DEFAULT_CONDITIONS,
     approve_and_sanction,
     modified_terms_preview,
+    run_simulated_disbursement,
+    update_conditions,
 )
-from loanpilot.agent.tools import bureau_check, kyc_check
-from loanpilot.components import calculate_foir, fmt_inr, status_chip
+from loanpilot.components import (
+    calculate_foir,
+    fmt_inr,
+    render_decision_card,
+    render_key_numbers,
+    render_why,
+    status_chip,
+)
 from loanpilot.data.queries import (
     get_agent_trace,
     get_application,
     get_documents,
-    get_review_queue,
-    list_applications,
+    get_disbursement,
+    get_human_review_cases,
+    get_sanction,
+    human_decision_is_override,
     record_human_decision,
 )
-from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.theme import render_disclaimer, render_header
-from loanpilot.components import render_decision_card, render_why
+from loanpilot.theme import render_disclaimer
 
 REVIEWERS = (
     "Aarav Kulkarni (Credit Analyst)",
@@ -54,11 +64,8 @@ _ACTION_STAGES = {
 
 
 def is_override_decision(ai_decision: str | None, action_code: str) -> bool:
-    """Return whether the explicitly defined CP-8.2 override conditions apply."""
-    return (
-        action_code in {"approve", "approve_with_conditions", "modify_terms"}
-        and ai_decision == "Decline"
-    ) or (action_code == "reject" and ai_decision == "Approve")
+    """Return whether the review action differs from the AI recommendation."""
+    return human_decision_is_override(ai_decision, ACTIONS.get(action_code, ""))
 
 
 def _age_days(submitted_at: str) -> int:
@@ -72,90 +79,130 @@ def _age_days(submitted_at: str) -> int:
     return max(0, (datetime.now() - submitted).days)
 
 
-def _load_data(store: SQLiteStore) -> None:
-    """Generate the synthetic sample cases in an empty database."""
-    counts = seed_demo_data(store, reset=True)
-    st.toast("Demo data loaded. " + ", ".join(f"{key}: {value}" for key, value in counts.items()))
-
-
-def _open_overview() -> None:
-    """Open Overview so the presenter can prepare the demo cases."""
+def _open_ai_assessment() -> None:
+    """Open assessment to select and assess a case."""
     from loanpilot.navigation import OPERATE_PAGES
 
-    st.switch_page(OPERATE_PAGES["overview"])
+    st.switch_page(OPERATE_PAGES["ai_assessment"])
 
 
-def _render_queue(queue: pd.DataFrame, store: SQLiteStore) -> str:
-    """Show queue counts/table and return its selected application id."""
-    st.subheader("Reviewer queue")
-    if queue.empty:
-        cases = list_applications({"demo_only": True}, store)
-        has_assessments = (
-            not cases.empty
-            and (
-                cases["ai_recommendation"].notna()
-                & cases["ai_recommendation"].astype(str).str.strip().ne("")
-            ).any()
-        )
-        if not has_assessments:
-            st.info(
-                "No AI assessments are saved yet. Prepare the demo cases on Overview "
-                "to populate this queue."
-            )
-            st.button(
-                "Prepare demo on Overview",
-                on_click=_open_overview,
-                key="review_prepare_demo",
-            )
-        else:
-            st.info("There are no applications waiting in Human Review.")
-        return ""
-    st.metric("Cases awaiting human review", len(queue))
-    body = []
-    for _, row in queue.iterrows():
-        recommendation = str(row["ai_recommendation"] or "—")
-        risk = str(row["risk_band"] or "—")
-        recommendation_kind = (
-            "success" if recommendation == "Approve"
-            else "warning" if recommendation == "Refer"
-            else "danger" if recommendation == "Decline"
-            else "neutral"
-        )
-        risk_kind = (
-            "success" if risk == "Low"
-            else "warning" if risk == "Medium"
-            else "danger" if risk == "High"
-            else "neutral"
-        )
-        body.append(
-            "<tr>"
-            f"<td>{escape(str(row['applicant']))}</td>"
-            f"<td>{status_chip(recommendation, recommendation_kind)}</td>"
-            f"<td>{status_chip(risk, risk_kind)}</td>"
-            f"<td>{_age_days(row['submitted_at'])}</td>"
-            "</tr>"
-        )
+def _open_review_case(application_id: str) -> None:
+    """Open the one expanded case panel, replacing any previous selection."""
+    st.session_state["review_open"] = application_id
+
+
+def _close_review_case(application_id: str) -> None:
+    """Close the selected review panel without changing the saved decision."""
+    if st.session_state.get("review_open") == application_id:
+        st.session_state["review_open"] = None
+
+
+def _set_review_filter(value: str) -> None:
+    """Change the queue filter and close any currently open case."""
+    st.session_state["review_filter"] = value
+    st.session_state["review_open"] = None
+
+
+def _queue_chip(label: str, kind: str) -> None:
+    """Render a compact, text-labelled chip for a queue cell."""
+    palette = {
+        "neutral": ("#f0eef0", "#62555c"),
+        "success": ("#e5f4e9", "#1f6b3b"),
+        "warning": ("#fff2d6", "#805400"),
+        "danger": ("#fde8e7", "#9d2f2a"),
+        "info": ("#e6f0ff", "#31598a"),
+    }
+    background, foreground = palette.get(kind, palette["neutral"])
     st.markdown(
-        '<div class="lp-table-wrap"><table class="lp-data-table">'
-        "<thead><tr><th>Applicant</th><th>AI recommendation</th><th>Risk</th>"
-        f"<th>Age (days)</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>",
+        f'<span style="display:inline-block;border-radius:999px;padding:.2rem .55rem;'
+        f'background:{background};color:{foreground};border:1px solid {foreground}33;'
+        f'font-size:.82rem;font-weight:650;white-space:nowrap">{escape(label)}</span>',
         unsafe_allow_html=True,
     )
-    session_selected = st.session_state.get("review_application")
-    application_ids = queue["application_id"].tolist()
-    index = application_ids.index(session_selected) if session_selected in application_ids else 0
-    selected_application = st.selectbox(
-        "Open review case",
-        application_ids,
-        index=index,
-        format_func=lambda application_id: (
-            f"{queue.loc[queue.application_id == application_id, 'applicant'].iloc[0]}"
-        ),
-        key="review_application",
+
+
+def _case_status(stage: str) -> tuple[str, str]:
+    """Map persisted stages to short queue labels and accessible chip kinds."""
+    return {
+        "Human Review": ("Pending", "warning"),
+        "Sanction": ("Approved", "success"),
+        "Disbursed (simulated)": ("Disbursed (simulated)", "success"),
+        "Rejected": ("Rejected", "danger"),
+        "Escalated": ("Referred up", "info"),
+        "Awaiting documents": ("Documents requested", "info"),
+    }.get(stage, (stage, "neutral"))
+
+
+def _render_queue_filters(store: SQLiteStore) -> tuple[pd.DataFrame, str]:
+    """Render filter buttons with case counts and a lightweight search field."""
+    active_filter = st.session_state.get("review_filter", "Pending")
+    all_cases = get_human_review_cases("All", "", store)
+    if all_cases.empty:
+        counts = {"Pending": 0, "Approved": 0, "Rejected": 0, "All": 0}
+    else:
+        stages = all_cases["stage"].astype(str)
+        counts = {
+            "Pending": int((stages == "Human Review").sum()),
+            "Approved": int(stages.isin(("Sanction", "Disbursed (simulated)")).sum()),
+            "Rejected": int((stages == "Rejected").sum()),
+            "All": len(all_cases),
+        }
+    columns = st.columns(4)
+    for column, label in zip(columns, ("Pending", "Approved", "Rejected", "All"), strict=True):
+        column.button(
+            f"{label} · {counts[label]}",
+            key=f"review_filter_{label.casefold()}",
+            type="primary" if active_filter == label else "secondary",
+            on_click=_set_review_filter,
+            args=(label,),
+            width="stretch",
+        )
+    search = st.text_input(
+        "Search by applicant or case ID",
+        placeholder="Name or case ID",
+        key="review_search",
     )
-    with st.expander("Selected case reference"):
-        st.code(str(selected_application))
-    return selected_application
+    cases = get_human_review_cases(active_filter, search, store)
+    return cases, active_filter
+
+
+def _render_queue_row(row: pd.Series) -> None:
+    """Render a compact review row with only the fields the queue is meant to show."""
+    stage = str(row["stage"])
+    status, status_kind = _case_status(stage)
+    recommendation = str(row["ai_recommendation"] or "—")
+    risk = str(row["risk_band"] or "—")
+    decision_state = stage != "Human Review"
+    columns = st.columns([2.2, 1.2, 1.0, 0.9, 1.3, 0.8], vertical_alignment="center")
+    with columns[0]:
+        st.markdown(
+            f'<strong>{escape(str(row["applicant"]))}</strong>',
+            unsafe_allow_html=True,
+        )
+    with columns[1]:
+        _queue_chip(recommendation, {
+            "Approve": "success", "Refer": "warning", "Decline": "danger"
+        }.get(recommendation, "neutral"))
+    with columns[2]:
+        _queue_chip(risk, {
+            "Low": "success", "Medium": "warning", "High": "danger"
+        }.get(risk, "neutral"))
+    with columns[3]:
+        st.markdown(f"{_age_days(str(row['submitted_at']))}d")
+    with columns[4]:
+        _queue_chip(status, status_kind)
+    with columns[5]:
+        st.button(
+            "View" if decision_state else "Review",
+            key=f"review_open_{row['application_id']}",
+            on_click=_open_review_case,
+            args=(str(row["application_id"]),),
+            width="stretch",
+        )
+    st.markdown(
+        '<div style="height:1px;background:#eee7eb;margin:.45rem 0"></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _parse_assessment(application_id: str, store: SQLiteStore) -> dict[str, Any] | None:
@@ -201,7 +248,7 @@ def _submit_review_decision(
     existing_emi: float,
     score: int | None,
 ) -> None:
-    """Read the current keyed widget values and persist the selected action."""
+    """Read keyed widgets in the callback, persist the choice, then close the panel."""
     error_key = f"review_error_{application_id}"
     action_code = str(st.session_state.get(f"review_action_{application_id}", ""))
     action = ACTIONS.get(action_code)
@@ -251,52 +298,11 @@ def _submit_review_decision(
         st.session_state[error_key] = str(error)
         return
 
-    st.session_state["review_result_application_id"] = application_id
-    st.session_state.pop(error_key, None)
-    st.session_state.pop("review_application", None)
-
-
-def _render_result_card(application_id: str, store: SQLiteStore) -> None:
-    """Read and display the committed reviewer outcome and the next step."""
     saved = get_application(application_id, store)
     if saved.empty:
-        st.error(f"Could not reload the saved case {application_id}.")
-        return
-    case = saved.iloc[0]
-    decision = str(case["human_decision"] or "Unavailable")
-    stage = str(case["stage"])
-    override = bool(case["is_override"])
-    if stage == "Rejected":
-        next_step = "Removed from the active queue."
-    elif stage == "Sanction":
-        next_step = "Review the sanction letter, then run simulated disbursement."
-    elif stage == "Escalated":
-        next_step = "Await a credit manager review."
-    else:
-        next_step = "Await the requested documents before reassessment."
-    st.success(
-        f"Saved from the database: {case['name']} — {decision}. "
-        f"Override: {'Yes' if override else 'No'}. Stage: {stage}. {next_step}"
-    )
-    st.caption(f"Written reason: {case['human_reason']}")
-    st.button(
-        "Back to reviewer queue",
-        key="review_clear_result",
-        on_click=lambda: st.session_state.pop("review_result_application_id", None),
-    )
-    st.button(
-        "Back to Overview",
-        key="review_back_overview",
-        on_click=_back_to_overview,
-    )
-
-
-def _back_to_overview() -> None:
-    """Return to the portfolio command centre after a saved decision."""
-    from loanpilot.navigation import OPERATE_PAGES
-
-    st.session_state.pop("review_result_application_id", None)
-    st.switch_page(OPERATE_PAGES["overview"])
+        raise RuntimeError(f"Could not reload the saved case {application_id}.")
+    st.session_state["review_open"] = None
+    st.session_state.pop(error_key, None)
 
 
 def _render_decision_panel(
@@ -307,7 +313,7 @@ def _render_decision_panel(
     existing_emi: float,
     score: int | None,
 ) -> None:
-    """Render a wide decision form driven by stable action codes and keyed state."""
+    """Render the pending-case form using case-specific stable widget keys."""
     st.subheader("Your decision")
     st.caption("Fictional reviewer names only; this demo has no authentication.")
     action_key = f"review_action_{application_id}"
@@ -318,7 +324,8 @@ def _render_decision_panel(
         "Refer": "refer_up",
         "Decline": "reject",
     }.get(str(summary["recommendation"]), "refer_up")
-    st.session_state.setdefault(action_key, default_action)
+    if action_key not in st.session_state:
+        st.session_state[action_key] = default_action
     amount = float(summary["application"]["requested_amount"])
     tenure = int(summary["application"]["tenure_months"])
     rate = pricing_rate(score)
@@ -336,7 +343,7 @@ def _render_decision_panel(
             st.warning(
                 "This differs from the AI recommendation (CP-8.2): a written reason is required."
             )
-        reviewer = st.selectbox("Reviewer", REVIEWERS, key=reviewer_key)
+        reviewer = st.selectbox("Reviewer (demo)", REVIEWERS, key=reviewer_key)
         if action_code == "modify_terms":
             if rate is None:
                 st.warning("No CP-7.1 grid rate is available; terms cannot be recalculated.")
@@ -367,13 +374,15 @@ def _render_decision_panel(
                 if preview["foir_over_limit"]:
                     st.warning("Modified terms remain above the 45% FOIR pass limit.")
     with fields[1]:
-        st.text_area(
-            "Written reason · at least 20 characters",
-            key=reason_key,
-            height=130,
-        )
-        reason_length = len(str(st.session_state.get(reason_key, "")).strip())
-        st.caption(f"{reason_length} / 20 characters minimum")
+        with st.container(key=f"hr-reason-{application_id}", border=True):
+            st.markdown("**Required · written reason**")
+            st.text_area(
+                "Explain your decision (minimum 20 characters)",
+                key=reason_key,
+                height=130,
+            )
+            reason_length = len(str(st.session_state.get(reason_key, "")).strip())
+            st.caption(f"{reason_length} / 20 characters")
 
     conditions = list(DEFAULT_CONDITIONS)
     if action_code == "approve_with_conditions":
@@ -391,15 +400,8 @@ def _render_decision_panel(
     reason_ready = reason_length >= 20
     conditions_ready = action_code != "approve_with_conditions" or bool(conditions)
     rate_ready = action_code not in {"approve", "approve_with_conditions", "modify_terms"} or rate is not None
-    disabled_reason = (
-        "Enter a reason of at least 20 characters."
-        if not reason_ready
-        else "Select at least one condition."
-        if not conditions_ready
-        else "No policy-grid rate is available."
-        if not rate_ready
-        else ""
-    )
+    if not conditions_ready:
+        st.warning("Select at least one condition before submitting.")
     st.button(
         "Submit decision",
         key=f"submit_review_{application_id}",
@@ -408,18 +410,16 @@ def _render_decision_panel(
             application_id,
             str(summary["recommendation"]),
             store,
-            amount,
-            int(tenure),
+            float(summary["application"]["requested_amount"]),
+            int(summary["application"]["tenure_months"]),
             verified_income,
             existing_emi,
             score,
         ),
-        disabled=bool(disabled_reason),
+        disabled=not (reason_ready and conditions_ready and rate_ready),
         type="primary",
         width="stretch",
     )
-    if disabled_reason:
-        st.caption(disabled_reason)
     error_key = f"review_error_{application_id}"
     if st.session_state.get(error_key):
         st.error(st.session_state[error_key])
@@ -505,46 +505,197 @@ def _render_evidence_tabs(
         )
 
 
+def _submit_disbursement(application_id: str, store: SQLiteStore) -> None:
+    """Persist checked conditions and execute the explicitly simulated transfer."""
+    sanctions = get_sanction(application_id, store)
+    if sanctions.empty:
+        raise RuntimeError(f"No sanction exists for {application_id}.")
+    sanction = sanctions.iloc[0]
+    conditions = json.loads(sanction["conditions_json"] or "[]")
+    for index, condition in enumerate(conditions):
+        condition["complete"] = bool(
+            st.session_state.get(f"hr_condition_{application_id}_{index}", False)
+        )
+    reviewer = str(st.session_state.get(f"hr_reviewer_{application_id}", REVIEWERS[0]))
+    try:
+        update_conditions(application_id, conditions, reviewer, store)
+        run_simulated_disbursement(application_id, store)
+    except ValueError as error:
+        st.session_state[f"hr_disbursement_error_{application_id}"] = str(error)
+        return
+    saved = get_application(application_id, store)
+    if saved.empty:
+        raise RuntimeError(f"Could not reload the disbursed case {application_id}.")
+    st.session_state["review_open"] = None
+
+
+def _render_readonly_panel(application_id: str, row: pd.Series, store: SQLiteStore) -> None:
+    """Show the saved human outcome and approved-case artifacts without an edit form."""
+    st.subheader(f"Saved decision · {row['human_decision'] or _case_status(str(row['stage']))[0]}")
+    st.write(f"**Reviewer:** {row['decided_by'] or 'Unavailable'}")
+    st.write(f"**Reason:** {row['human_reason'] or 'No written reason recorded.'}")
+    st.write(f"**Override:** {'Yes' if bool(row['is_override']) else 'No'}")
+    st.write(f"**Time:** {row['decided_at'] or 'Unavailable'}")
+    if row["stage"] not in {"Sanction", "Disbursed (simulated)"}:
+        return
+    sanctions = get_sanction(application_id, store)
+    if sanctions.empty:
+        st.info("The sanction record is not available.")
+        return
+    sanction = sanctions.iloc[0]
+    letter_path = Path(str(sanction["letter_path"]))
+    if not letter_path.is_absolute():
+        letter_path = config.PROJECT_ROOT / letter_path
+    letter_path = letter_path.resolve()
+    try:
+        letter_path.relative_to(config.PROJECT_ROOT.resolve())
+    except ValueError as error:
+        raise ValueError("Sanction letter path is outside the project directory.") from error
+    if letter_path.is_file():
+        st.download_button(
+            "Download sanction letter",
+            data=letter_path.read_bytes(),
+            file_name=letter_path.name,
+            mime="application/pdf",
+            key=f"hr_sanction_download_{application_id}",
+        )
+    else:
+        st.info("The sanction letter file is unavailable.")
+    kfs = json.loads(sanction["kfs_json"] or "{}")
+    st.markdown("**Key Fact Statement preview**")
+    st.table(
+        [
+            {"Item": "Approved amount", "Value": fmt_inr(sanction["approved_amount"])},
+            {"Item": "Annual rate", "Value": f"{float(sanction['rate']):.2%}"},
+            {"Item": "Monthly EMI", "Value": fmt_inr(sanction["emi"])},
+            {"Item": "Tenure", "Value": f"{int(sanction['tenure_months'])} months"},
+            {"Item": "Processing fee", "Value": fmt_inr(kfs.get("processing_fee", 0))},
+            {"Item": "Net disbursed", "Value": fmt_inr(kfs.get("net_disbursed", 0))},
+        ]
+    )
+    if row["stage"] == "Disbursed (simulated)":
+        disbursement = get_disbursement(application_id, store)
+        if not disbursement.empty:
+            st.success(
+                f"Simulated disbursement {disbursement.iloc[0]['disbursement_ref']} "
+                f"· {fmt_inr(disbursement.iloc[0]['net_amount'])} net."
+            )
+        return
+    conditions = json.loads(sanction["conditions_json"] or "[]")
+    st.markdown("**Conditions before simulated disbursement**")
+    for index, condition in enumerate(conditions):
+        key = f"hr_condition_{application_id}_{index}"
+        if key not in st.session_state:
+            st.session_state[key] = bool(condition.get("complete", False))
+        st.checkbox(str(condition["name"]), key=key)
+    can_disburse = all(
+        bool(st.session_state.get(f"hr_condition_{application_id}_{index}", False))
+        for index in range(len(conditions))
+    )
+    button_columns = st.columns([1, 2])
+    with button_columns[0]:
+        st.button(
+            "Run simulated disbursement",
+            key=f"hr_disburse_{application_id}",
+            type="primary",
+            disabled=not can_disburse,
+            on_click=_submit_disbursement,
+            args=(application_id, store),
+            width="stretch",
+        )
+    if not can_disburse:
+        button_columns[1].caption("Complete every listed condition first.")
+    if st.session_state.get(f"hr_disbursement_error_{application_id}"):
+        st.error(st.session_state.pop(f"hr_disbursement_error_{application_id}"))
+
+
+def _render_case_panel(
+    application_id: str,
+    row: pd.Series,
+    store: SQLiteStore,
+) -> None:
+    """Render the one expanded inline detail panel for a queue row."""
+    panel_columns = st.columns([5, 1])
+    with panel_columns[0]:
+        st.markdown(f"### {row['applicant']}")
+    with panel_columns[1]:
+        st.button(
+            "✕",
+            key=f"close_review_details_{application_id}",
+            help="Close this panel without saving a decision.",
+            on_click=_close_review_case,
+            args=(application_id,),
+            width="stretch",
+        )
+    with st.container(border=True):
+        summary = _parse_assessment(application_id, store)
+        if row["stage"] == "Human Review":
+            if summary is None:
+                st.info("Run AI Assessment before human review.")
+            else:
+                render_decision_card(application_id, store, compact=True)
+                render_why(application_id, store)
+                render_key_numbers(application_id, store)
+                with st.expander("Full evidence"):
+                    _render_evidence_tabs(application_id, summary, store)
+                _render_decision_panel(
+                    application_id,
+                    summary,
+                    store,
+                    float(summary["finances"].get("verified_income") or 0),
+                    float(summary["finances"].get("existing_emi") or 0),
+                    summary["bureau"].get("score"),
+                )
+        else:
+            _render_readonly_panel(application_id, row, store)
+
+
 def render(store: SQLiteStore | None = None) -> None:
-    """Render the reviewer queue, decision-first workspace, and evidence tabs."""
+    """Render the review queue with summary metrics, inline case panels, and action form."""
     render_disclaimer()
     store = store or SQLiteStore()
     create_schema(store)
-    render_header(
-        "Human Review",
-        "Review the AI recommendation, record a reasoned human decision, and inspect evidence.",
-        "OPERATE  /  CREDIT DESK",
-    )
-    queue = get_review_queue(store)
-    if queue.empty and store.table_counts().get("cur_applications", 0) == 0:
-        st.info("No demo applications are loaded yet. Prepare demo cases on Overview.")
-        st.button(
-            "Prepare demo on Overview",
-            on_click=_open_overview,
-            key="review_prepare_demo_empty",
-        )
-        return
-    selected = _render_queue(queue, store)
-    result_application_id = st.session_state.get("review_result_application_id")
-    if result_application_id:
-        st.subheader("Decision recorded")
-        _render_result_card(result_application_id, store)
-        return
-    if not selected:
-        return
-    summary = _parse_assessment(selected, store)
-    if summary is None:
-        st.info("Run AI Assessment before human review. The agent cannot sanction a case.")
+    st.title("Review queue")
+    cases, active_filter = _render_queue_filters(store)
+    if cases.empty:
+        if active_filter == "Pending":
+            st.info("Nothing waiting for review. Run an assessment first.")
+            st.button(
+                "Open AI Assessment",
+                key="review_open_assessment",
+                on_click=_open_ai_assessment,
+            )
+        else:
+            st.info("No cases match this filter and search.")
         return
 
-    render_decision_card(selected, store, compact=True)
-    render_why(selected, store)
-    _render_decision_panel(
-        selected,
-        summary,
-        store,
-        float(summary["finances"].get("verified_income") or 0),
-        float(summary["finances"].get("existing_emi") or 0),
-        summary["bureau"].get("score"),
+    labels = ("APPLICANT", "AI DECISION", "RISK", "WAITING", "STATUS", "")
+    selected = st.session_state.get("review_open")
+    visible_ids = set(cases["application_id"].astype(str))
+    if selected not in visible_ids:
+        selected = None
+    displayed_cases = (
+        cases.loc[cases["application_id"].astype(str) == selected]
+        if selected is not None
+        else cases
     )
-    _render_evidence_tabs(selected, summary, store)
+    with st.container(border=True):
+        heading_columns = st.columns([2.4, 1, .85, .75, 1.4, .75])
+        for column, label in zip(heading_columns, labels, strict=True):
+            with column:
+                st.markdown(
+                    f'<div style="font-size:.68rem;letter-spacing:.08em;font-weight:750;'
+                    f'color:#817780">{label}</div>',
+                    unsafe_allow_html=True,
+                )
+        for _, row in displayed_cases.iterrows():
+            application_id = str(row["application_id"])
+            row_key = (
+                f"hr-decided-{application_id}"
+                if row["stage"] != "Human Review"
+                else f"hr-pending-{application_id}"
+            )
+            with st.container(key=row_key, gap="small"):
+                _render_queue_row(row)
+                if selected == application_id:
+                    _render_case_panel(application_id, row, store)

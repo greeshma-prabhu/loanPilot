@@ -8,46 +8,100 @@ from loanpilot.data.store import SQLiteStore
 
 _CSS = """
 <style>
+    html, body {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
+    }
+    [data-testid="stAppViewContainer"] {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        overflow-x: hidden !important;
+    }
+    [data-testid="stMainBlockContainer"] {
+        width: 100% !important;
+        max-width: 1280px !important;
+        min-width: 0 !important;
+    }
+    [data-testid="stMain"] {
+        flex: 1 1 auto !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    [data-testid="stHorizontalBlock"],
+    [data-testid="stColumn"] {
+        min-width: 0 !important;
+    }
+    [class*="st-key-hr-decided-"] {
+        border-radius: 10px;
+        background: rgba(243, 247, 248, .78);
+        padding: .15rem .3rem;
+    }
+    [class*="st-key-hr-reason-"] {
+        border: 2px solid #d59a36;
+        background: #fffaf0;
+        padding: .75rem;
+        border-radius: 12px;
+    }
+    [class*="st-key-review-count-total"] [data-testid="stVerticalBlockBorderWrapper"] {
+        background: #ffffff;
+        border-color: #dfe5e8;
+    }
+    [class*="st-key-review-count-pending"] [data-testid="stVerticalBlockBorderWrapper"] {
+        background: #fffaf3;
+        border-color: #f6d7b5;
+    }
+    [class*="st-key-review-count-approved"] [data-testid="stVerticalBlockBorderWrapper"] {
+        background: #f6fff9;
+        border-color: #cfead8;
+    }
+    [class*="st-key-review-count-rejected"] [data-testid="stVerticalBlockBorderWrapper"] {
+        background: #fff7f6;
+        border-color: #efcfcb;
+    }
     :root {
-        --lp-ink: #143b3c;
-        --lp-muted: #617779;
-        --lp-teal: #0e7775;
-        --lp-line: #dce8e7;
-        --lp-canvas: #f3f7f7;
+        --lp-ink: #24333a;
+        --lp-muted: #68777d;
+        --lp-teal: #138b83;
+        --lp-line: #e1e7e9;
+        --lp-canvas: #ffffff;
     }
     .stApp {
-        background:
-            radial-gradient(ellipse at 86% 0%, rgba(201, 231, 227, .48), transparent 34rem),
-            var(--lp-canvas);
+        background: var(--lp-canvas);
         color: var(--lp-ink);
     }
     [data-testid="stHeader"] {
-        background: rgba(243, 247, 247, .86);
+        background: rgba(255, 255, 255, .92);
         backdrop-filter: blur(12px);
     }
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #102f35 0%, #163f43 58%, #18504e 100%);
-        border-right: 1px solid rgba(255,255,255,.1);
+        background: #ffffff;
+        border-right: 1px solid #e1e7e9;
     }
-    [data-testid="stSidebar"] * { color: #edf7f6; }
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #bdd2d1; }
-    [data-testid="stSidebar"] [data-testid="stSidebarNavLink"] {
+    [data-testid="stSidebar"] * { color: #24333a; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #68777d; }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a {
         border-radius: 10px;
-        margin: 3px 8px;
+        margin: 3px 0;
+        border: 1px solid transparent;
         transition: background .18s ease, transform .18s ease;
     }
-    [data-testid="stSidebar"] [data-testid="stSidebarNavLink"]:hover {
-        background: rgba(255,255,255,.1);
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
+        background: #f4f7f8;
+        border-color: #e1e7e9;
         transform: translateX(2px);
     }
-    [data-testid="stSidebar"] [data-testid="stSidebarNavLink"][aria-current="page"] {
-        background: rgba(128, 207, 195, .2);
-        box-shadow: inset 3px 0 #83d2c3;
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a[aria-current="page"] {
+        background: #edf5f4;
+        border-color: #c9e2df;
+        box-shadow: inset 3px 0 #138b83;
     }
     [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
-        background: rgba(255,255,255,.1);
-        border-color: rgba(255,255,255,.2);
-        color: #fff;
+        background: transparent;
+        border-color: #d7e0e3;
+        color: #34454c;
     }
     .block-container {
         max-width: 1280px;
@@ -121,31 +175,64 @@ _CSS = """
         font-weight: 630;
     }
     [data-testid="stTabs"] button[aria-selected="true"] {
-        color: #075957;
-        background: rgba(14,119,117,.08);
+        color: #11776f;
+        background: #eef7f6;
     }
     [data-testid="stTabs"] [data-testid="stVerticalBlock"] { gap: .7rem; }
-    [data-testid="stProgress"] > div > div > div { background: #0e7775; }
+    [data-testid="stProgress"] > div > div > div { background: #138b83; }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
         font-size: 14px;
     }
     [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
         font-size: 14px;
-        color: #c6d9d8;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] {
-        background: rgba(255,255,255,.07);
-        border-color: rgba(255,255,255,.2);
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-        color: #f0f8f7 !important;
+        color: #68777d;
     }
     .lp-sidebar-brand {
-        color: #f0f8f7;
-        font-size: 1rem;
+        display: flex;
+        flex-direction: column;
+        color: #2a2a2a;
+        font-size: 1.12rem;
         font-weight: 720;
         letter-spacing: -.01em;
-        margin: .2rem 0 0;
+        margin: .2rem 0 1.2rem;
+        padding: .8rem .75rem;
+        border: 1px solid #e1e7e9;
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 4px 14px rgba(20, 59, 60, .04);
+    }
+    .lp-sidebar-brand span {
+        color: #68777d;
+        font-size: .88rem;
+        font-weight: 550;
+        letter-spacing: 0;
+    }
+    .lp-sidebar-section {
+        margin: .9rem .25rem .25rem;
+        color: #45646a;
+        font-size: .74rem;
+        font-weight: 750;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+    }
+    [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
+        background: #eef7f6;
+        border-color: #c9e2df;
+        color: #255a56;
+    }
+    input, textarea, [data-baseweb="select"] > div {
+        border-color: #cbd6da !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"],
+    [data-testid="stExpander"],
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"] {
+        border-color: #dbe3e6;
+    }
+    [data-testid="stSegmentedControl"] button[aria-pressed="true"] {
+        background: #138b83 !important;
+        color: #fff !important;
+        border-color: #0e756f !important;
     }
     [data-testid="stDataFrame"], [data-testid="stTable"] {
         border: 1px solid var(--lp-line);
@@ -326,10 +413,6 @@ _CSS = """
     [data-testid="stBaseButton-secondary"] * {
         color: var(--lp-ink) !important;
     }
-    [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"],
-    [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] * {
-        color: #fff !important;
-    }
     [data-baseweb="input"] > div,
     [data-baseweb="textarea"] > div,
     [data-baseweb="select"] > div {
@@ -387,32 +470,7 @@ _CSS = """
         line-height: 1.25;
     }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong {
-        color: #fff;
-    }
-    .lp-disclaimer {
-        display: flex;
-        align-items: center;
-        gap: .6rem;
-        padding: .58rem .9rem;
-        margin: 0 0 1.15rem;
-        border: 1px solid #d5e8e4;
-        border-left: 4px solid #1b8279;
-        border-radius: 11px;
-        background: linear-gradient(90deg, #eaf5f2, #f8fbfa);
-        color: #315d5a;
-        font-size: .9rem;
-        font-weight: 560;
-    }
-    .lp-disclaimer-icon {
-        display: inline-grid;
-        width: 1.35rem;
-        height: 1.35rem;
-        place-items: center;
-        border-radius: 50%;
-        background: #d2eae4;
-        color: #126a63;
-        font-size: .76rem;
-        font-weight: 800;
+        color: #24333a;
     }
     .lp-eyebrow {
         color: #167c76;
@@ -500,18 +558,47 @@ _CSS = """
         font-size: 1.55rem;
         font-weight: 650;
     }
+    button[data-testid="stBaseButton-primary"] {
+        background: linear-gradient(120deg, #168f87, #11766f) !important;
+        border: 1px solid #0e756f !important;
+        color: #fff !important;
+        box-shadow: 0 4px 10px rgba(17, 118, 111, .14) !important;
+    }
+    button[data-testid="stBaseButton-primary"] *,
+    button[data-testid="stBaseButton-primary"]:hover {
+        color: #fff !important;
+    }
+    button[data-testid="stBaseButton-primary"]:hover {
+        background: linear-gradient(120deg, #11766f, #0d625d) !important;
+    }
+    [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
+        background: transparent !important;
+        border: 1px solid transparent !important;
+        color: #34454c !important;
+    }
+    [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] * {
+        color: #34454c !important;
+    }
+    .lp-eyebrow { color: #138b83 !important; }
+    .lp-subtitle { color: #68777d !important; }
+    [data-baseweb="input"] > div,
+    [data-baseweb="textarea"] > div,
+    [data-baseweb="select"] > div {
+        border-color: #cbd6da !important;
+    }
+    [data-baseweb="input"] > div:focus-within,
+    [data-baseweb="textarea"] > div:focus-within,
+    [data-baseweb="select"] > div:focus-within {
+        border-color: #138b83 !important;
+        box-shadow: 0 0 0 3px rgba(19, 139, 131, .16) !important;
+    }
 </style>
 """
 
 
 def render_disclaimer() -> None:
-    """Render the synthetic-data disclaimer banner."""
+    """Apply shared presentation styles without rendering a global banner."""
     st.markdown(_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<div class="lp-disclaimer"><span class="lp-disclaimer-icon">i</span>'
-        "Demonstration with synthetic data. Not a real bank system or credit decision.</div>",
-        unsafe_allow_html=True,
-    )
 
 
 def render_header(

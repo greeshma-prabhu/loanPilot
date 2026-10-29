@@ -327,6 +327,77 @@ def get_review_queue(store: SQLiteStore | None = None) -> pd.DataFrame:
     )
 
 
+def get_human_review_cases(
+    status_filter: str = "Pending",
+    search: str = "",
+    store: SQLiteStore | None = None,
+) -> pd.DataFrame:
+    """Fetch cases for the Human Review queue using its status and search filters."""
+    stage_filters = {
+        "Pending": ("Human Review",),
+        "Approved": ("Sanction", "Disbursed (simulated)"),
+        "Rejected": ("Rejected",),
+        "All": (
+            "Human Review",
+            "Sanction",
+            "Disbursed (simulated)",
+            "Rejected",
+            "Escalated",
+            "Awaiting documents",
+        ),
+    }
+    if status_filter not in stage_filters:
+        raise ValueError(f"Unknown Human Review status filter: {status_filter}")
+    stages = stage_filters[status_filter]
+    placeholders = ", ".join("?" for _ in stages)
+    search_sql = ""
+    params: list[Any] = list(stages)
+    if search.strip():
+        search_sql = "AND (c.name LIKE ? OR a.application_id LIKE ?)"
+        pattern = f"%{search.strip()}%"
+        params.extend((pattern, pattern))
+    return _store(store).query(
+        f"""
+        SELECT a.application_id, a.submitted_at, a.stage,
+               a.requested_amount, a.tenure_months,
+               c.name AS applicant, c.age, c.city,
+               d.ai_recommendation, d.human_decision, d.human_reason,
+               d.is_override, d.decided_by, d.decided_at,
+               json_extract(d.ai_reasons_json, '$.risk_band') AS risk_band
+        FROM cur_applications a
+        JOIN cur_customers c ON c.customer_id = a.customer_id
+        LEFT JOIN cur_decisions d ON d.application_id = a.application_id
+        WHERE a.stage IN ({placeholders})
+        {search_sql}
+        ORDER BY CASE a.stage
+                     WHEN 'Human Review' THEN 0
+                     WHEN 'Sanction' THEN 1
+                     WHEN 'Disbursed (simulated)' THEN 2
+                     WHEN 'Rejected' THEN 3
+                     WHEN 'Escalated' THEN 4
+                     WHEN 'Awaiting documents' THEN 5
+                     ELSE 6
+                 END,
+                 a.submitted_at ASC,
+                 a.application_id
+        """,
+        params,
+    )
+
+
+def human_decision_is_override(ai_recommendation: str | None, decision: str) -> bool:
+    """Return whether a human outcome differs from the AI recommendation."""
+    expected_recommendations = {
+        "Approve": "Approve",
+        "Approve with conditions": "Approve",
+        "Modify terms": "Approve",
+        "Refer up": "Refer",
+        "Request documents": "Refer",
+        "Reject": "Decline",
+    }
+    return expected_recommendations.get(decision) != ai_recommendation
+
+
 def has_live_gemini_trace(store: SQLiteStore | None = None) -> bool:
     """Return whether a persisted assessment trace used Gemini live."""
     database = _store(store)
@@ -403,11 +474,8 @@ def record_human_decision(
             raise ValueError(f"Unknown application: {application_id}")
         if application["stage"] != "Human Review":
             raise ValueError("Only cases in Human Review can receive a decision.")
-        expected_override = (
-            decision in {"Approve", "Approve with conditions", "Modify terms"}
-            and application["ai_recommendation"] == "Decline"
-        ) or (
-            decision == "Reject" and application["ai_recommendation"] == "Approve"
+        expected_override = human_decision_is_override(
+            application["ai_recommendation"], decision
         )
         if bool(is_override) != expected_override:
             raise ValueError("Override flag does not match the AI and human decisions.")

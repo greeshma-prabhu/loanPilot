@@ -30,18 +30,30 @@ OPERATE_PAGES = {
     ),
 }
 
+KNOW_MORE_PAGES = {
+    "approach_story": st.Page(
+        approach_story.render, title="Approach Story", url_path="approach-story"
+    ),
+    "technical_architecture": st.Page(
+        technical_architecture.render,
+        title="Technical Architecture",
+        url_path="technical-architecture",
+    ),
+    "data_explorer": st.Page(
+        data_explorer.render, title="Data Explorer", url_path="data-explorer"
+    ),
+    "about_faq": st.Page(
+        about_faq.render, title="About & FAQ", url_path="about-faq"
+    ),
+}
+
+REFERENCE_PAGES = {
+    "about_faq": st.Page(
+        about_faq.render, title="About & FAQ", url_path="about-faq"
+    )
+}
+
 NAVIGATION = {
     "Operate": list(OPERATE_PAGES.values()),
-    "Explain": [
-        st.Page(approach_story.render, title="Approach Story", url_path="approach-story"),
-        st.Page(
-            technical_architecture.render,
-            title="Technical Architecture",
-            url_path="technical-architecture",
-        ),
-        st.Page(data_explorer.render, title="Data Explorer", url_path="data-explorer"),
-    ],
-    "Reference": [
-        st.Page(about_faq.render, title="About & FAQ", url_path="about-faq")
-    ],
+    "Know more": list(KNOW_MORE_PAGES.values()),
 }

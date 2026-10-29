@@ -5,6 +5,8 @@ synthetic people, documents, and bureau/KYC responses. It is not a real bank
 system, credit decision, loan offer, or regulatory-compliance claim. AI can
 recommend and explain, but a human reviewer makes the decision.
 
+Demonstration with synthetic data. Not a real bank system or credit decision.
+
 ## Run locally
 
 ### Windows PowerShell

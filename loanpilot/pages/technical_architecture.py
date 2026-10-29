@@ -10,10 +10,11 @@ def _architecture_diagram() -> None:
     """Draw the logical architecture using labelled, status-coloured nodes."""
     dot = r"""
     digraph architecture {
-      graph [rankdir=TB, bgcolor="transparent", pad="0.2", nodesep="0.32", ranksep="0.5"];
-      node [shape=box, style="rounded,filled", fontname="Arial", fontsize=10,
-            color="#b9c9c7", fontcolor="#163d3c", margin="0.13,0.09"];
-      edge [color="#75928f", penwidth=1.35, arrowsize=0.65];
+      graph [rankdir=LR, bgcolor="transparent", pad="0.08", nodesep="0.16",
+             ranksep="0.28", size="10,4!", ratio="compress"];
+      node [shape=box, style="rounded,filled", fontname="Arial", fontsize=8,
+            color="#b9c9c7", fontcolor="#163d3c", margin="0.08,0.06"];
+      edge [color="#75928f", penwidth=1.1, arrowsize=0.55];
       sources [label="Sources\nCore banking · documents\nBureau mock · KYC mock · policy docs", fillcolor="#fff0cf"];
       ingest [label="Ingestion\nGuided intake · PDF reading\nSeed / simulator", fillcolor="#d9f0e2"];
       subgraph cluster_lake {

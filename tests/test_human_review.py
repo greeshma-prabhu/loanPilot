@@ -238,12 +238,12 @@ def test_human_review_page_renders_each_persona(review_store, application_id) ->
         "import streamlit as st\n"
         "from loanpilot.pages.human_review import render\n"
         "from loanpilot.data.store import SQLiteStore\n"
-        f"st.session_state['review_application'] = {application_id!r}\n"
+        f"st.session_state['review_open'] = {application_id!r}\n"
         f"render(SQLiteStore({str(review_store.path)!r}))\n"
     )
     app = AppTest.from_string(script).run()
     assert not app.exception
-    assert app.title[0].value == "Human Review"
+    assert app.title[0].value == "Review queue"
     assert any(button.label == "Submit decision" for button in app.button)
     assert any(button.label == "Go to Human Review" for button in app.button) is False
 

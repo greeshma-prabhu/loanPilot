@@ -13,6 +13,7 @@ from loanpilot.data.queries import (
     create_sanction,
     get_application,
     get_sanction,
+    human_decision_is_override,
     record_disbursement,
     update_sanction_conditions,
 )
@@ -206,12 +207,12 @@ def approve_and_sanction(
     if app["stage"] != "Human Review":
         raise ValueError("Only a case in Human Review can be approved.")
     ai_decision = app["ai_recommendation"]
-    override = ai_decision == "Decline"
     decision = decision_action or (
         "Approve with conditions" if conditions else "Approve"
     )
     if decision not in {"Approve", "Approve with conditions", "Modify terms"}:
         raise ValueError(f"Unsupported approval action: {decision}")
+    override = human_decision_is_override(ai_decision, decision)
     now = datetime.now().isoformat(timespec="seconds")
     from loanpilot.data.queries import record_human_decision
 

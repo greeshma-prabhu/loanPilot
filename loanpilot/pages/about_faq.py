@@ -84,6 +84,9 @@ def render() -> None:
     )
     with tabs[0]:
         st.subheader("Aarambh Bank · LoanPilot")
+        st.info(
+            "Demonstration with synthetic data. Not a real bank system or credit decision."
+        )
         st.write(
             "LoanPilot is a presales point-of-view demo for a fictional mid-sized "
             "Indian bank. It shows a personal-loan journey from application intake "

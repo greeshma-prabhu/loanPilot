@@ -195,7 +195,7 @@ def _open_human_review(application_id: str) -> None:
     from loanpilot.navigation import OPERATE_PAGES
 
     st.session_state["selected_application"] = application_id
-    st.session_state["review_application"] = application_id
+    st.session_state["review_open"] = application_id
     st.switch_page(OPERATE_PAGES["human_review"])
 
 

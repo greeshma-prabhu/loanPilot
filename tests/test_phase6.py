@@ -236,7 +236,7 @@ def test_shared_handoff_button_carries_case_to_human_review(monkeypatch) -> None
     ).run()
     app.button(key="decision_review_APP-PERSONA-4").click().run()
     assert not app.exception
-    assert app.session_state["review_application"] == "APP-PERSONA-4"
+    assert app.session_state["review_open"] == "APP-PERSONA-4"
     assert app.session_state["selected_application"] == "APP-PERSONA-4"
 
 

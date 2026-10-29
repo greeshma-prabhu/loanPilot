@@ -14,8 +14,8 @@ from loanpilot.data.document_library import (
     format_document_upload_time,
     list_library_documents,
     read_library_pdf,
-    save_uploaded_pdf,
 )
+from loanpilot.data.notifications import upload_and_notify_pdf
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
@@ -50,11 +50,11 @@ def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
             type="primary",
             disabled=uploaded_file is None or bool(upload_error),
         ):
-            with st.spinner("Saving the PDF and extracting its text..."):
+            with st.spinner("Saving the PDF, extracting text, and preparing its summary..."):
                 try:
                     uploaded_name = str(uploaded_file.name)
                     uploaded_content = bytes(uploaded_file.getvalue())
-                    document = save_uploaded_pdf(
+                    document = upload_and_notify_pdf(
                         uploaded_name,
                         uploaded_content,
                         store,
@@ -64,11 +64,17 @@ def _render_upload(store: SQLiteStore, documents_dir: Path) -> None:
                     st.error(str(error))
                 else:
                     if document["processing_status"] != "Processed":
-                        st.warning(str(document["processing_error"]))
-                    else:
-                        st.success(
-                            "Document uploaded. Its summary will be prepared on Overview."
+                        st.warning(
+                            "The PDF was saved, but no readable text could be extracted. "
+                            "Its notification will explain that a summary is unavailable."
                         )
+                    elif document["summary_status"] != "Completed":
+                        st.warning(
+                            "The PDF was saved, but a readable summary could not be prepared."
+                        )
+                    st.success(
+                        "Document uploaded. Its update is available in Overview notifications."
+                    )
 
 
 def _render_document_list(

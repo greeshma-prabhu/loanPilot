@@ -8,11 +8,13 @@ import plotly.express as px
 import streamlit as st
 
 from loanpilot.components import fmt_inr, status_chip
-from loanpilot.data.document_library import (
-    format_document_upload_time,
-    is_document_summary_current,
-    list_library_documents,
-    summarize_library_document,
+from loanpilot.data.document_library import format_document_upload_time
+from loanpilot.data.notifications import (
+    format_relative_upload_time,
+    list_document_notifications,
+    mark_all_document_notifications_read,
+    mark_document_notification_read,
+    unread_document_notification_count,
 )
 from loanpilot.data.queries import (
     overview_attention_cases,
@@ -20,7 +22,7 @@ from loanpilot.data.queries import (
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
-from loanpilot.theme import format_datetime, render_disclaimer, render_header
+from loanpilot.theme import format_datetime, render_disclaimer
 
 _STATUSES = ("Approved", "Rejected", "Pending")
 _STATUS_COLORS = {
@@ -221,71 +223,92 @@ def _render_portfolio_analytics(store: SQLiteStore) -> None:
         )
 
 
-def _render_latest_updates(store: SQLiteStore) -> None:
-    """Prepare recent document summaries here and display the persisted results."""
-    st.subheader("Latest Updates")
-    documents = list_library_documents(store)
-    summaries_to_prepare = []
-    for document in documents[:5]:
-        summary_status = str(document.get("summary_status", "Not requested"))
-        failed_gemini_summary = (
-            summary_status == "Failed"
-            and "gemini" in str(document.get("summary_error") or "").casefold()
-        )
-        if (
-            document.get("processing_status") == "Processed"
-            and (
-                summary_status in {"Not requested", "Completed"}
-                or failed_gemini_summary
-            )
-            and not is_document_summary_current(document)
-        ):
-            summaries_to_prepare.append(document)
-    if summaries_to_prepare:
-        with st.spinner("Preparing summaries for recent documents..."):
-            for document in summaries_to_prepare:
-                summarize_library_document(str(document["document_id"]), store)
-    documents = list_library_documents(store)
-    updates = [
-        document
-        for document in documents
-        if str(document.get("summary_status", "Not requested")) != "Not requested"
-    ]
-    if not updates:
-        st.info("Document summaries will appear here after a PDF is uploaded.")
-        return
+def _read_notification(document_id: str, store: SQLiteStore) -> None:
+    """Expand one notification and persist its read state."""
+    st.session_state[f"overview_notification_expanded_{document_id}"] = True
+    mark_document_notification_read(document_id, store)
 
-    for update in updates[:5]:
-        status = str(update.get("summary_status", "Not requested"))
-        with st.container(border=True):
-            if is_document_summary_current(update):
-                headline = escape(str(update.get("summary_headline", "")))
-                summary_method = str(update.get("summary_method") or "")
-                summary_label = (
-                    "AI summary · Gemini"
-                    if summary_method == "Gemini"
-                    else "Extractive summary · local fallback"
+
+def _collapse_notification(document_id: str) -> None:
+    """Collapse one notification without changing its persisted read state."""
+    st.session_state[f"overview_notification_expanded_{document_id}"] = False
+
+
+def _notification_preview(summary: str, limit: int = 132) -> str:
+    """Keep initial notification cards compact and free of line-break noise."""
+    preview = " ".join(summary.split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+
+
+def _render_notification_panel(store: SQLiteStore) -> None:
+    """Render a compact, persistent notification panel in the Overview header."""
+    notifications = list_document_notifications(store)
+    unread_count = sum(item.get("read_at") is None for item in notifications)
+    label = str(unread_count) if unread_count else " "
+    with st.popover(
+        label,
+        icon=":material/notifications:",
+        help="Document notifications",
+        key="overview_notification_popover",
+    ):
+        st.markdown("#### Document updates")
+        if not notifications:
+            st.info("No new document updates.")
+            return
+        st.button(
+            "Mark all as read",
+            key="overview_notifications_mark_all_read",
+            on_click=mark_all_document_notifications_read,
+            args=(store,),
+            disabled=not unread_count,
+            width="stretch",
+        )
+        for notification in notifications:
+            document_id = str(notification["document_id"])
+            headline = str(notification.get("headline") or "Document update")
+            summary = str(notification.get("summary") or "")
+            read_at = notification.get("read_at")
+            expanded = bool(
+                st.session_state.get(
+                    f"overview_notification_expanded_{document_id}",
+                    False,
                 )
-                st.caption(summary_label)
-                st.markdown(f"**{headline}**")
-                summary = escape(str(update.get("summary_text", "")))
-                st.markdown(
-                    f'<p class="lp-update-summary">{summary}</p>',
-                    unsafe_allow_html=True,
+            )
+            with st.container(border=True):
+                st.markdown(f"**{escape(headline)}**")
+                st.caption(
+                    f"{'● Unread · ' if read_at is None else ''}"
+                    f"{format_relative_upload_time(notification.get('uploaded_at'))}"
                 )
-            elif status == "Completed":
-                st.caption("Summary is unavailable")
-                st.write(
-                    "A concise summary could not be extracted from the available PDF text."
-                )
-            else:
-                status_label = "Processing" if status == "Processing" else "Failed"
-                st.caption(status_label)
-                if status == "Failed":
-                    st.write(
-                        "A readable summary is unavailable. Check the PDF text or upload an OCR-readable document."
+                if expanded:
+                    st.markdown(
+                        f'<p class="lp-update-summary">{escape(summary)}</p>',
+                        unsafe_allow_html=True,
                     )
-            st.caption(format_document_upload_time(update.get("uploaded_at")))
+                    st.caption(
+                        f"{notification.get('original_filename', 'Document')} · "
+                        f"{format_document_upload_time(notification.get('uploaded_at'))}"
+                    )
+                    st.button(
+                        "Show less",
+                        key=f"overview_notification_collapse_{document_id}",
+                        on_click=_collapse_notification,
+                        args=(document_id,),
+                    )
+                else:
+                    preview = escape(_notification_preview(summary))
+                    st.markdown(
+                        f'<p class="lp-update-summary">{preview}</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        "Read more",
+                        key=f"overview_notification_expand_{document_id}",
+                        on_click=_read_notification,
+                        args=(document_id, store),
+                    )
 
 
 def _open_case(application_id: str) -> None:
@@ -470,14 +493,22 @@ def render(store: SQLiteStore | None = None) -> None:
     identity = st.session_state.get("auth") or {}
     first_name = str(identity.get("name") or "").strip().split(" ", 1)[0]
     title = f"Welcome back, {first_name}" if first_name else "Welcome back"
-    render_header(
-        title,
-        "Your lending portfolio at a glance. Review application trends and take action on cases that need attention.",
-        "OPERATE  /  COMMAND CENTRE",
+    st.markdown(
+        '<div class="lp-eyebrow">OPERATE  /  COMMAND CENTRE</div>',
+        unsafe_allow_html=True,
+    )
+    title_column, notification_column = st.columns([8, 1])
+    with title_column:
+        st.title(title)
+    with notification_column:
+        _render_notification_panel(store)
+    st.markdown(
+        '<div class="lp-subtitle">Your lending portfolio at a glance. '
+        "Review application trends and take action on cases that need attention.</div>",
+        unsafe_allow_html=True,
     )
     _render_kpis(records)
     _render_portfolio_analytics(store)
     st.subheader("Needs Your Attention")
     _render_attention(store)
     _render_recent_applications(records)
-    _render_latest_updates(store)

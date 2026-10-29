@@ -9,19 +9,24 @@ from loanpilot.data.document_library import (
     SUMMARY_VERSION,
     format_document_upload_time,
     get_library_document,
-    is_document_summary_current,
     save_uploaded_pdf,
+    summarize_library_document,
+)
+from loanpilot.data.notifications import (
+    create_document_notification,
+    list_document_notifications,
+    unread_document_notification_count,
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.pages import overview
 
 
-def _pdf_bytes() -> bytes:
+def _pdf_bytes(text: str = "Lending eligibility requires verified monthly income.") -> bytes:
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=12)
-    pdf.multi_cell(0, 10, "Lending eligibility requires verified monthly income.")
+    pdf.multi_cell(0, 10, text)
     return bytes(pdf.output())
 
 
@@ -207,8 +212,47 @@ def test_overview_handles_missing_attention_fields(tmp_path, monkeypatch) -> Non
     assert "nan" not in content.casefold()
 
 
-def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> None:
-    store = SQLiteStore(tmp_path / "latest-updates.db")
+def test_overview_does_not_generate_summaries_or_notifications_for_old_documents(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "overview-existing-document.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "income-policy.pdf",
+        _pdf_bytes(),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    gemini_calls = []
+    monkeypatch.setattr(
+        "loanpilot.data.document_library.generate_json_with_gemini",
+        lambda prompt: gemini_calls.append(prompt),
+    )
+
+    app = AppTest.from_string(
+        "from loanpilot.data.store import SQLiteStore\n"
+        "from loanpilot.pages.overview import render\n"
+        f"render(SQLiteStore({str(store.path)!r}))"
+    ).run()
+
+    persisted = get_library_document(str(document["document_id"]), store)
+    content = "\n".join(
+        str(element.value)
+        for name in ("title", "header", "subheader", "caption", "markdown", "text")
+        for element in getattr(app, name, [])
+    )
+    assert not app.exception
+    assert persisted is not None
+    assert persisted["summary_status"] == "Not requested"
+    assert not gemini_calls
+    assert list_document_notifications(store) == []
+    assert "Latest Updates" not in content
+    assert unread_document_notification_count(store) == 0
+
+
+def test_overview_notification_panel_expands_summary_and_marks_read(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "overview-notification.db")
     create_schema(store)
     document = save_uploaded_pdf(
         "income-policy.pdf",
@@ -220,148 +264,34 @@ def test_latest_updates_reads_persisted_summary_and_upload_time(tmp_path) -> Non
         """
         UPDATE raw_library_documents
         SET summary_status = 'Completed',
-            summary_method = 'Local extractive',
+            summary_method = 'Gemini',
             summary_headline = 'Verified income requirements',
-            summary_text = 'The document requires verified income evidence. It outlines how income should be reviewed.',
+            summary_text = 'The document requires verified income evidence. Reviewers compare declared income with supporting records.',
             summary_version = ?
         WHERE document_id = ?
         """,
         (SUMMARY_VERSION, document["document_id"]),
     )
-
-    app = AppTest.from_string(
-        "from loanpilot.data.store import SQLiteStore\n"
-        "from loanpilot.pages.overview import render\n"
-        f"render(SQLiteStore({str(store.path)!r}))"
-    ).run()
-
-    assert not app.exception
-    content = "\n".join(
-        str(element.value)
-        for name in ("markdown", "text", "caption")
-        for element in getattr(app, name, [])
-    )
-    assert "Verified income requirements" in content
-    assert "The document requires verified income evidence." in content
-    assert format_document_upload_time(document["uploaded_at"]) in content
-    assert "Local extractive" not in content
-    assert not app.get("file_uploader")
-    assert not any("Read document" in button.label for button in app.button)
-
-
-def test_overview_generates_a_new_document_summary(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = SQLiteStore(tmp_path / "overview-summary-extraction.db")
-    create_schema(store)
-    document = save_uploaded_pdf(
-        "income-policy.pdf",
-        _pdf_bytes(),
-        store,
-        documents_dir=tmp_path / "library",
-    )
-    assert document["summary_status"] == "Not requested"
-    monkeypatch.setattr(
-        "loanpilot.data.document_library.generate_json_with_gemini",
-        lambda _prompt: {
-            "headline": "Lending eligibility",
-            "summary": (
-                "Lending eligibility requires verified monthly income. "
-                "Reviewers compare the evidence with the application."
-            ),
-        },
-    )
-
-    app = AppTest.from_string(
-        "from loanpilot.data.store import SQLiteStore\n"
-        "from loanpilot.pages.overview import render\n"
-        f"render(SQLiteStore({str(store.path)!r}))"
-    ).run()
-
-    persisted = get_library_document(str(document["document_id"]), store)
-    assert not app.exception
-    assert persisted is not None
-    assert persisted["summary_status"] == "Completed"
-    assert persisted["summary_method"] == "Gemini"
-    assert is_document_summary_current(persisted)
-    content = "\n".join(
-        str(element.value)
-        for name in ("markdown", "text", "caption")
-        for element in getattr(app, name, [])
-    )
-    assert "Lending eligibility" in content
-
-
-def test_overview_uses_local_fallback_when_gemini_is_unavailable(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = SQLiteStore(tmp_path / "overview-summary-fallback.db")
-    create_schema(store)
-    document = save_uploaded_pdf(
-        "income-policy.pdf",
-        _pdf_bytes(),
-        store,
-        documents_dir=tmp_path / "library",
-    )
-    monkeypatch.setattr(
-        "loanpilot.data.document_library.generate_json_with_gemini",
-        lambda _prompt: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
-    )
-
-    app = AppTest.from_string(
-        "from loanpilot.data.store import SQLiteStore\n"
-        "from loanpilot.pages.overview import render\n"
-        f"render(SQLiteStore({str(store.path)!r}))"
-    ).run()
-
-    persisted = get_library_document(str(document["document_id"]), store)
-    content = "\n".join(
-        str(element.value)
-        for name in ("markdown", "text", "caption")
-        for element in getattr(app, name, [])
-    )
-    assert not app.exception
-    assert persisted is not None
-    assert persisted["summary_method"] == "Local extractive"
-    assert "Extractive summary · local fallback" in content
-    assert "Lending eligibility" in content
-
-
-def test_latest_updates_refreshes_obsolete_summary_from_extracted_text(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = SQLiteStore(tmp_path / "obsolete-summary.db")
-    create_schema(store)
-    document = save_uploaded_pdf(
-        "old-policy.pdf",
-        _pdf_bytes(),
-        store,
-        documents_dir=tmp_path / "library",
+    second_document = save_uploaded_pdf(
+            "review-guide.pdf",
+            _pdf_bytes("Reviewers compare declared income with supporting records."),
+            store,
+            documents_dir=tmp_path / "library",
     )
     store.execute(
-        """
-        UPDATE raw_library_documents
-        SET summary_status = 'Completed',
-            summary_headline = 'LOANPILOT AARAMBH BANK Page 1',
-            summary_text = 'LOANPILOT AARAMBH BANK FICTIONAL DEMO DOCUMENT Page 1',
-        summary_version = ?
-        WHERE document_id = ?
-        """,
-        (SUMMARY_VERSION, document["document_id"]),
+            """
+            UPDATE raw_library_documents
+            SET summary_status = 'Completed',
+                summary_method = 'Gemini',
+                summary_headline = 'Income review steps',
+                summary_text = 'Reviewers compare declared income with supporting records.',
+                summary_version = ?
+            WHERE document_id = ?
+            """,
+            (SUMMARY_VERSION, second_document["document_id"]),
     )
-    monkeypatch.setattr(
-        "loanpilot.data.document_library.generate_json_with_gemini",
-        lambda _prompt: {
-            "headline": "Lending eligibility",
-            "summary": (
-                "Lending eligibility requires verified monthly income. "
-                "Reviewers compare the evidence with the application."
-            ),
-        },
-    )
+    create_document_notification(str(document["document_id"]), store)
+    create_document_notification(str(second_document["document_id"]), store)
 
     app = AppTest.from_string(
         "from loanpilot.data.store import SQLiteStore\n"
@@ -369,23 +299,43 @@ def test_latest_updates_refreshes_obsolete_summary_from_extracted_text(
         f"render(SQLiteStore({str(store.path)!r}))"
     ).run()
 
-    content = "\n".join(
-        str(element.value)
-        for name in ("markdown", "text", "caption")
-        for element in getattr(app, name, [])
-    )
     assert not app.exception
-    assert "LOANPILOT AARAMBH BANK Page 1" not in content
-    assert "FICTIONAL DEMO DOCUMENT" not in content
-    assert "Summary needs refreshing" not in content
-    assert "Lending eligibility" in content
-    refreshed = store.query(
-        "SELECT summary_status, summary_method, summary_version "
-        "FROM raw_library_documents WHERE document_id = ?",
-        (document["document_id"],),
-    ).iloc[0]
-    assert refreshed.to_dict() == {
-        "summary_status": "Completed",
-        "summary_method": "Gemini",
-        "summary_version": SUMMARY_VERSION,
-    }
+    assert unread_document_notification_count(store) == 2
+    app.button(key="overview_notifications_mark_all_read").click().run()
+    assert not app.exception
+    assert unread_document_notification_count(store) == 0
+    assert app.button(key=f"overview_notification_expand_{document['document_id']}")
+    app.button(key=f"overview_notification_expand_{document['document_id']}").click().run()
+
+    assert not app.exception
+    assert unread_document_notification_count(store) == 0
+    assert app.session_state[f"overview_notification_expanded_{document['document_id']}"]
+    assert app.button(key=f"overview_notification_collapse_{document['document_id']}")
+    visible_text = "\n".join(str(element.value) for element in app.markdown)
+    assert "Reviewers compare declared income with supporting records." in visible_text
+    assert "income-policy.pdf" in "\n".join(
+        str(element.value) for element in app.caption
+    )
+    assert format_document_upload_time(document["uploaded_at"]) in "\n".join(
+        str(element.value) for element in app.caption
+    )
+
+
+def test_overview_handles_an_unreadable_document_notification_without_inventing_summary(
+    tmp_path,
+) -> None:
+    store = SQLiteStore(tmp_path / "overview-unreadable-notification.db")
+    create_schema(store)
+    document = save_uploaded_pdf(
+        "scanned.pdf",
+        _pdf_bytes("Page 1"),
+        store,
+        documents_dir=tmp_path / "library",
+    )
+    summarize_library_document(str(document["document_id"]), store)
+    create_document_notification(str(document["document_id"]), store)
+    notification = list_document_notifications(store)[0]
+
+    assert notification["headline"] == "Document uploaded · summary unavailable"
+    assert "No readable text could be extracted" in notification["summary"]
+    assert notification["read_at"] is None

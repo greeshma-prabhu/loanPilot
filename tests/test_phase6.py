@@ -568,7 +568,6 @@ def test_overview_analytics_match_persisted_application_records(seeded_store) ->
         "Application Trends",
         "Needs Your Attention",
         "Recent Applications",
-        "Latest Updates",
     ]
 
 

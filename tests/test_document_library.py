@@ -530,8 +530,11 @@ def test_document_library_has_no_summary_actions_or_summary_content(tmp_path, mo
     )
 
 
-def test_overview_regenerates_old_summary_from_cleaned_source(tmp_path, monkeypatch):
-    """Overview refreshes an obsolete summary without adding a duplicate record."""
+def test_overview_does_not_regenerate_old_summaries_or_create_notifications(
+    tmp_path,
+    monkeypatch,
+):
+    """Opening Overview does not process historical library records."""
     store = SQLiteStore(tmp_path / "old-summary-refresh.db")
     documents_dir = tmp_path / "library"
     document = save_uploaded_pdf(
@@ -579,13 +582,9 @@ def test_overview_regenerates_old_summary_from_cleaned_source(tmp_path, monkeypa
     assert not app.exception
     assert len(rows) == 1
     assert refreshed is not None
-    assert refreshed["summary_version"] == SUMMARY_VERSION
-    assert refreshed["summary_headline"] == "Verified income review requirements"
-    assert "LOANPILOT" not in prompts[0]
-    assert "FICTIONAL DEMO DOCUMENT" not in prompts[0]
-    assert "reviewer name, decision reason, and timestamp" in " ".join(
-        prompts[0].split()
-    )
+    assert refreshed["summary_version"] == 0
+    assert refreshed["summary_headline"] == "LOANPILOT AARAMBH BANK Page 1"
+    assert prompts == []
 
 
 @pytest.mark.parametrize(

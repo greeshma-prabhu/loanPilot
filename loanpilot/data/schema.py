@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS raw_library_documents (
     summary_text TEXT NOT NULL DEFAULT '',
     summary_error TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS raw_document_notifications (
+    document_id TEXT PRIMARY KEY,
+    headline TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    read_at TEXT,
+    FOREIGN KEY (document_id)
+        REFERENCES raw_library_documents(document_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_raw_document_notifications_uploaded
+    ON raw_document_notifications(uploaded_at DESC, document_id);
 CREATE TABLE IF NOT EXISTS raw_documents (
     doc_id TEXT PRIMARY KEY,
     application_id TEXT NOT NULL,

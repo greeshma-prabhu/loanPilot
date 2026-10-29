@@ -158,7 +158,6 @@ def test_overview_contains_dashboard_sections_without_duplicate_sidebar_actions(
         "Application Trends",
         "Needs Your Attention",
         "Recent Applications",
-        "Latest Updates",
     ]
     assert not any(item.value == "Quick Actions" for item in app.header)
     assert not any(item.value == "Quick Actions" for item in app.subheader)

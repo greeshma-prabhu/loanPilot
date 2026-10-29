@@ -243,72 +243,118 @@ def _notification_preview(summary: str, limit: int = 132) -> str:
 
 
 def _render_notification_panel(store: SQLiteStore) -> None:
-    """Render a compact, persistent notification panel in the Overview header."""
+    """Render a compact, dismissible notification panel in the Overview header."""
     notifications = list_document_notifications(store)
     unread_count = sum(item.get("read_at") is None for item in notifications)
-    label = str(unread_count) if unread_count else " "
-    with st.popover(
-        label,
+    if st.button(
+        str(unread_count) if unread_count else "",
         icon=":material/notifications:",
         help="Document notifications",
-        key="overview_notification_popover",
+        key="overview_notification_toggle",
     ):
-        st.markdown("#### Document updates")
-        if not notifications:
-            st.info("No new document updates.")
-            return
-        st.button(
-            "Mark all as read",
-            key="overview_notifications_mark_all_read",
-            on_click=mark_all_document_notifications_read,
-            args=(store,),
-            disabled=not unread_count,
-            width="stretch",
+        st.session_state["overview_notifications_open"] = not bool(
+            st.session_state.get("overview_notifications_open", False)
         )
-        for notification in notifications:
-            document_id = str(notification["document_id"])
-            headline = str(notification.get("headline") or "Document update")
-            summary = str(notification.get("summary") or "")
-            read_at = notification.get("read_at")
-            expanded = bool(
-                st.session_state.get(
-                    f"overview_notification_expanded_{document_id}",
-                    False,
-                )
-            )
-            with st.container(border=True):
-                st.markdown(f"**{escape(headline)}**")
-                st.caption(
-                    f"{'● Unread · ' if read_at is None else ''}"
-                    f"{format_relative_upload_time(notification.get('uploaded_at'))}"
-                )
-                if expanded:
-                    st.markdown(
-                        f'<p class="lp-update-summary">{escape(summary)}</p>',
-                        unsafe_allow_html=True,
+        st.rerun()
+
+    if st.session_state.get("overview_notifications_open", False):
+        st.markdown(
+            """
+            <style>
+            .st-key-overview_notification_panel {
+                position: fixed !important;
+                z-index: 1000 !important;
+                top: 10rem !important;
+                right: max(1rem, calc((100vw - 1280px) / 2 + 1rem)) !important;
+                width: min(420px, calc(100vw - 2rem)) !important;
+                max-height: min(70vh, 620px) !important;
+                overflow-y: auto !important;
+                padding: 1rem !important;
+                border: 1px solid #dfe7e9 !important;
+                border-radius: 16px !important;
+                background: #fff !important;
+                box-shadow: 0 16px 40px rgba(18, 45, 59, .2) !important;
+            }
+            @media (max-width: 760px) {
+                .st-key-overview_notification_panel {
+                    top: 7rem !important;
+                    right: .75rem !important;
+                    width: calc(100vw - 1.5rem) !important;
+                    max-height: 76vh !important;
+                }
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.container(key="overview_notification_panel"):
+            heading, close = st.columns([5, 1])
+            with heading:
+                st.markdown("#### Document updates")
+            with close:
+                if st.button(
+                    "",
+                    icon=":material/close:",
+                    help="Close notifications",
+                    key="overview_notifications_close",
+                ):
+                    st.session_state["overview_notifications_open"] = False
+                    st.rerun()
+            if not notifications:
+                st.info("No new document updates.")
+                return
+            if st.button(
+                "Mark all as read",
+                key="overview_notifications_mark_all_read",
+                disabled=not unread_count,
+                width="stretch",
+            ):
+                mark_all_document_notifications_read(store)
+                st.rerun()
+            for notification in notifications:
+                document_id = str(notification["document_id"])
+                headline = str(notification.get("headline") or "Document update")
+                summary = str(notification.get("summary") or "")
+                read_at = notification.get("read_at")
+                expanded = bool(
+                    st.session_state.get(
+                        f"overview_notification_expanded_{document_id}",
+                        False,
                     )
+                )
+                with st.container(border=True):
+                    st.markdown(f"**{escape(headline)}**")
                     st.caption(
-                        f"{notification.get('original_filename', 'Document')} · "
-                        f"{format_document_upload_time(notification.get('uploaded_at'))}"
+                        f"{'● Unread · ' if read_at is None else ''}"
+                        f"{format_relative_upload_time(notification.get('uploaded_at'))}"
                     )
-                    st.button(
-                        "Show less",
-                        key=f"overview_notification_collapse_{document_id}",
-                        on_click=_collapse_notification,
-                        args=(document_id,),
-                    )
-                else:
-                    preview = escape(_notification_preview(summary))
-                    st.markdown(
-                        f'<p class="lp-update-summary">{preview}</p>',
-                        unsafe_allow_html=True,
-                    )
-                    st.button(
-                        "Read more",
-                        key=f"overview_notification_expand_{document_id}",
-                        on_click=_read_notification,
-                        args=(document_id, store),
-                    )
+                    if expanded:
+                        st.markdown(
+                            f'<p class="lp-update-summary">{escape(summary)}</p>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            f"{notification.get('original_filename', 'Document')} · "
+                            f"{format_document_upload_time(notification.get('uploaded_at'))}"
+                        )
+                        st.button(
+                            "Show less",
+                            key=f"overview_notification_collapse_{document_id}",
+                            on_click=_collapse_notification,
+                            args=(document_id,),
+                        )
+                    else:
+                        preview = escape(_notification_preview(summary))
+                        st.markdown(
+                            f'<p class="lp-update-summary">{preview}</p>',
+                            unsafe_allow_html=True,
+                        )
+                        st.button(
+                            "Read more",
+                            key=f"overview_notification_expand_{document_id}",
+                            on_click=_read_notification,
+                            args=(document_id, store),
+                        )
 
 
 def _open_case(application_id: str) -> None:

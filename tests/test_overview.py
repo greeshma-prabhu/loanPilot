@@ -301,9 +301,21 @@ def test_overview_notification_panel_expands_summary_and_marks_read(tmp_path) ->
 
     assert not app.exception
     assert unread_document_notification_count(store) == 2
+    app.button(key="overview_notification_toggle").click().run()
+    assert app.session_state["overview_notifications_open"] is True
+    assert app.button(key="overview_notifications_close")
     app.button(key="overview_notifications_mark_all_read").click().run()
     assert not app.exception
     assert unread_document_notification_count(store) == 0
+    assert app.button(key="overview_notification_toggle").label == ""
+    app.button(key="overview_notifications_close").click().run()
+    assert not app.exception
+    assert app.session_state["overview_notifications_open"] is False
+    assert not any(
+        button.key == "overview_notifications_close"
+        for button in app.button
+    )
+    app.button(key="overview_notification_toggle").click().run()
     assert app.button(key=f"overview_notification_expand_{document['document_id']}")
     app.button(key=f"overview_notification_expand_{document['document_id']}").click().run()
 

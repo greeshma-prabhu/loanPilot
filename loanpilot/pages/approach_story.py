@@ -168,11 +168,11 @@ def render() -> None:
     guardrails = st.columns(4, gap="large")
     for column, title, explanation in zip(
         guardrails,
-        ("Policy as code", "No AI sanction", "Reasons for overrides", "Audit log"),
+        ("Policy as code", "No AI sanction", "Optional override notes", "Audit log"),
         (
             "Rules run in deterministic code and can be reviewed.",
             "The agent recommends; a person must approve a sanction.",
-            "A different human decision needs a written reason.",
+            "Reviewers may record a reason with a different decision.",
             "Steps and decisions leave a trace for review.",
         ),
         strict=True,

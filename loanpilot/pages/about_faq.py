@@ -39,7 +39,7 @@ _FAQ = [
     (
         "What happens if the AI is wrong?",
         "The recommendation is evidence-linked and handed to a human. Reviewers "
-        "can make a different decision, with a written reason recorded for an override.",
+        "can make a different decision and may optionally record a reason.",
     ),
     (
         "How does sign-in work?",

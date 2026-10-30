@@ -27,6 +27,7 @@ from loanpilot.data.queries import (
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
+from loanpilot.decisions import HUMAN_ACTIONS, evaluate_human_action
 
 VALID_REASON = "Reviewed the synthetic evidence and documented this decision."
 PERSONA_IDS = [f"APP-PERSONA-{number}" for number in range(1, 7)]
@@ -135,38 +136,92 @@ def test_meera_override_record(review_store) -> None:
     assert application["stage"] == "Sanction"
 
 
-def test_reason_under_twenty_characters_is_rejected(review_store) -> None:
-    """Decision persistence rejects short written reasons."""
-    with pytest.raises(ValueError, match="20 characters"):
-        record_human_decision(
-            "APP-PERSONA-1",
-            "Approve",
-            "Looks good",
-            False,
-            "Aarav Kulkarni (Credit Analyst)",
-            "2026-10-27T10:00:00",
-            "Sanction",
-            review_store,
-        )
-    assert get_application("APP-PERSONA-1", review_store).iloc[0]["stage"] == "Human Review"
+@pytest.mark.parametrize("reason", ("", "Looks good"))
+def test_human_decision_accepts_empty_or_short_reason(review_store, reason) -> None:
+    """Reviewers can save an action with any reason length, including no reason."""
+    record_human_decision(
+        "APP-PERSONA-1",
+        "Approve",
+        reason,
+        False,
+        "Aarav Kulkarni (Credit Analyst)",
+        "2026-10-27T10:00:00",
+        "Sanction",
+        review_store,
+    )
+    saved = get_application("APP-PERSONA-1", review_store).iloc[0]
+    assert saved["human_decision"] == "Approve"
+    assert saved["human_reason"] == reason
+    assert saved["stage"] == "Sanction"
 
 
-def test_short_imran_approval_reason_cannot_override(review_store) -> None:
-    """An AI-declined case cannot be approved with an inadequate override reason."""
-    with pytest.raises(ValueError, match="20 characters"):
-        approve_and_sanction(
-            "APP-PERSONA-3",
-            100000,
-            24,
-            0.16,
-            "Not enough",
-            "Nisha Desai (Credit Manager)",
-            store=review_store,
-        )
+def test_all_actions_persist_for_each_ai_recommendation(review_store) -> None:
+    """All six actions persist with their mapped stage and exact CP-8.2 override flag."""
+    application_id = "APP-PERSONA-1"
+    for recommendation in ("Approve", "Refer", "Decline"):
+        for action_code, action in HUMAN_ACTIONS.items():
+            assessment = evaluate_human_action(recommendation, action_code)
+            review_store.execute(
+                """
+                UPDATE cur_applications SET stage = 'Human Review'
+                WHERE application_id = ?
+                """,
+                (application_id,),
+            )
+            review_store.execute(
+                """
+                UPDATE cur_decisions
+                SET ai_recommendation = ?, human_decision = NULL,
+                    human_reason = NULL, is_override = 0, decided_by = NULL,
+                    decided_at = NULL
+                WHERE application_id = ?
+                """,
+                (recommendation, application_id),
+            )
+            record_human_decision(
+                application_id,
+                action.label,
+                VALID_REASON,
+                assessment.is_override,
+                "Test Reviewer",
+                "2026-10-29T12:00:00",
+                action.stage,
+                review_store,
+            )
+            saved = get_application(application_id, review_store).iloc[0]
+            assert saved["human_decision"] == action.label
+            assert saved["stage"] == action.stage
+            assert bool(saved["is_override"]) is assessment.is_override
+
+
+def test_override_rule_is_specific_and_separate_from_difference() -> None:
+    """Only approve after decline or reject after approve is a CP-8.2 override."""
+    assert evaluate_human_action("Approve", "reject").differs
+    assert evaluate_human_action("Approve", "reject").is_override
+    assert evaluate_human_action("Decline", "approve").is_override
+    assert not evaluate_human_action("Approve", "approve").is_override
+    assert evaluate_human_action("Decline", "modify_terms").is_override
+    assert not evaluate_human_action("Approve", "refer_up").is_override
+    assert evaluate_human_action("Decline", "refer_up").differs
+
+
+def test_short_imran_approval_reason_can_override(review_store) -> None:
+    """An AI-declined case may be approved with a short recorded reason."""
+    approve_and_sanction(
+        "APP-PERSONA-3",
+        100000,
+        24,
+        0.16,
+        "Override",
+        "Nisha Desai (Credit Manager)",
+        store=review_store,
+    )
     application = get_application("APP-PERSONA-3", review_store).iloc[0]
-    assert application["stage"] == "Human Review"
-    assert application["human_decision"] is None
-    assert get_sanction("APP-PERSONA-3", review_store).empty
+    assert application["stage"] == "Sanction"
+    assert application["human_decision"] == "Approve"
+    assert application["human_reason"] == "Override"
+    assert application["is_override"] == 1
+    assert not get_sanction("APP-PERSONA-3", review_store).empty
 
 
 def test_modify_terms_recalculates_emi_and_warns_above_foir(review_store) -> None:

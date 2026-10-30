@@ -95,9 +95,9 @@
     },
     {
       "clause_id": "CP-8.2",
-      "title": "Reason for an override",
-      "text": "A human decision that differs from the AI recommendation must include a written reason.",
-      "criteria": {"written_reason_required_for_override": true}
+      "title": "Optional override note",
+      "text": "A human reviewer may record an optional written note when the decision differs from the AI recommendation.",
+      "criteria": {"written_reason_required_for_override": false}
     }
   ],
   "regulatory_topic_notes": [

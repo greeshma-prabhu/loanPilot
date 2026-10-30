@@ -9,11 +9,11 @@ from typing import Any
 from fpdf import FPDF
 
 from loanpilot.config import BANK_NAME, DATA_DIR, PROJECT_ROOT
+from loanpilot.decisions import action_code_for_label, evaluate_human_action
 from loanpilot.data.queries import (
     create_sanction,
     get_application,
     get_sanction,
-    human_decision_is_override,
     record_disbursement,
     update_sanction_conditions,
 )
@@ -198,8 +198,6 @@ def approve_and_sanction(
 ) -> dict[str, Any]:
     """Record a human approval and create its sanction and KFS artifacts."""
     store = store or SQLiteStore()
-    if len(reason.strip()) < 20:
-        raise ValueError("A written reason of at least 20 characters is required.")
     application = get_application(application_id, store)
     if application.empty:
         raise ValueError(f"Unknown application: {application_id}")
@@ -212,7 +210,10 @@ def approve_and_sanction(
     )
     if decision not in {"Approve", "Approve with conditions", "Modify terms"}:
         raise ValueError(f"Unsupported approval action: {decision}")
-    override = human_decision_is_override(ai_decision, decision)
+    override = evaluate_human_action(
+        ai_decision,
+        action_code_for_label(decision),
+    ).is_override
     now = datetime.now().isoformat(timespec="seconds")
     from loanpilot.data.queries import record_human_decision
 

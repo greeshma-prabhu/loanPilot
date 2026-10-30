@@ -13,6 +13,7 @@ from loanpilot.agent.policy_engine import (
 )
 from loanpilot.agent.sanction import reducing_balance_emi
 from loanpilot.components import calculate_foir, fmt_inr, status_chip
+from loanpilot.decisions import HUMAN_ACTIONS, evaluate_human_action
 from loanpilot.theme import render_disclaimer, render_header
 
 ASSESSMENT_WAIT_SECONDS = 5
@@ -37,7 +38,7 @@ _STATE_KEYS = (
     "guided_demo_step",
     "guided_demo_assessment_started_at",
     "guided_demo_assessment_ready",
-    "guided_demo_reviewer_outcome",
+    "guided_demo_action",
     "guided_demo_reviewer_rationale",
 )
 
@@ -115,7 +116,7 @@ def _start_demo() -> None:
     st.session_state["guided_demo_step"] = 0
     st.session_state["guided_demo_assessment_ready"] = False
     st.session_state.pop("guided_demo_assessment_started_at", None)
-    st.session_state.pop("guided_demo_reviewer_outcome", None)
+    st.session_state.pop("guided_demo_action", None)
     st.session_state.pop("guided_demo_reviewer_rationale", None)
 
 
@@ -249,7 +250,7 @@ def _render_assessment() -> None:
 
 
 def _render_human_review() -> None:
-    """Let the user simulate reviewer agreement or an explained override."""
+    """Let the presenter choose any human action independent of AI advice."""
     st.subheader("Human Review")
     results = _assessment_results()
     st.markdown("**Evidence available to the reviewer**")
@@ -263,77 +264,90 @@ def _render_human_review() -> None:
         + status_chip(results["policy"]["recommendation"], "success"),
         unsafe_allow_html=True,
     )
+    recommendation = results["policy"]["recommendation"]
+    suggested_code = {
+        "Approve": "approve",
+        "Refer": "refer_up",
+        "Decline": "reject",
+    }.get(recommendation)
+    suggested_action = (
+        HUMAN_ACTIONS[suggested_code].label if suggested_code else "No suggested action"
+    )
     st.caption(
-        "A reviewer considers the evidence and may agree or override, subject to "
-        "configured policy and a recorded rationale."
+        "A reviewer considers the evidence and chooses an action independently "
+        "of the AI recommendation."
     )
-    st.radio(
+    st.caption(f"Suggested for this story: {suggested_action}")
+    action_code = st.selectbox(
         "Simulated reviewer action",
-        (
-            "Agree with AI recommendation",
-            "Override: Refer for additional review",
-            "Override: Decline",
+        ["", *HUMAN_ACTIONS],
+        format_func=lambda code: (
+            "Choose an action" if not code else HUMAN_ACTIONS[code].label
         ),
-        key="guided_demo_reviewer_outcome",
+        index=0,
+        key="guided_demo_action",
     )
-    outcome = st.session_state.get(
-        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
+    action_assessment = (
+        evaluate_human_action(recommendation, action_code) if action_code else None
     )
-    if outcome != "Agree with AI recommendation":
-        st.text_area(
-            "Override rationale (required)",
-            key="guided_demo_reviewer_rationale",
-            max_chars=500,
-            help="This rationale is kept only in the current demo session.",
+    if action_assessment and action_assessment.differs:
+        notice = (
+            "This differs from the AI recommendation (CP-8.2). "
+            "You may add a reason to document your decision."
         )
+        st.warning(f"Override: {notice}" if action_assessment.is_override else notice)
+    st.text_area(
+        "Decision reason (optional)",
+        key="guided_demo_reviewer_rationale",
+        help="This rationale is kept only in the current demo session.",
+    )
     with st.expander("What happens in this step?"):
         st.write(
-            "A human reviewer checks the evidence and recommendation. In the "
-            "real workflow, any override must meet policy controls and include "
-            "a documented reason."
+            "A human reviewer checks the evidence and makes the final decision. "
+            "The AI recommendation is advisory; the reviewer may choose any action."
         )
 
 
-def _reviewer_override_is_valid() -> bool:
-    """Require a rationale before the simulated reviewer can override."""
-    outcome = st.session_state.get(
-        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
-    )
-    return (
-        outcome == "Agree with AI recommendation"
-        or bool(str(st.session_state.get("guided_demo_reviewer_rationale", "")).strip())
-    )
+def _reviewer_decision_is_valid() -> bool:
+    """Require a selected human action; recording a reason is optional."""
+    action_code = st.session_state.get("guided_demo_action", "")
+    return action_code in HUMAN_ACTIONS
 
 
 def _render_decision() -> None:
-    """Show the simulated final outcome and explicitly non-binding next steps."""
+    """Show the selected human outcome and explicitly non-binding next steps."""
     st.subheader("Final Decision")
     results = _assessment_results()
-    reviewer_outcome = st.session_state.get(
-        "guided_demo_reviewer_outcome", "Agree with AI recommendation"
+    action_code = st.session_state.get("guided_demo_action", "")
+    reason = str(st.session_state.get("guided_demo_reviewer_rationale", "")).strip()
+    if action_code not in HUMAN_ACTIONS:
+        st.info("Choose an action to continue.")
+        return
+    action = HUMAN_ACTIONS[action_code]
+    action_assessment = evaluate_human_action(
+        results["policy"]["recommendation"], action_code
     )
-    if reviewer_outcome == "Agree with AI recommendation":
-        title = "Approved – Illustrative Demo"
+    if action_code in {"approve", "approve_with_conditions", "modify_terms"}:
         approved_amount = min(
             APPLICANT["requested_amount"], results["affordable_amount"]
         )
-        rationale = (
-            "The synthetic profile meets the illustrative affordability, "
-            "document, and policy checks; the reviewer agreed with the AI recommendation."
-        )
         kind = "success"
-    elif reviewer_outcome == "Override: Refer for additional review":
-        title = "Referred – Illustrative Demo"
+    elif action_code == "reject":
         approved_amount = None
-        rationale = str(st.session_state["guided_demo_reviewer_rationale"]).strip()
-        kind = "warning"
-    else:
-        title = "Declined – Illustrative Demo"
-        approved_amount = None
-        rationale = str(st.session_state["guided_demo_reviewer_rationale"]).strip()
         kind = "danger"
+    else:
+        approved_amount = None
+        kind = "warning"
 
-    st.markdown(status_chip(title, kind), unsafe_allow_html=True)
+    st.markdown(
+        status_chip(f"{action.label} – Illustrative Demo", kind),
+        unsafe_allow_html=True,
+    )
+    st.write(f"**Your decision:** {action.label}")
+    st.write(f"**AI recommendation:** {results['policy']['recommendation']}")
+    st.write(f"**Override:** {'Yes' if action_assessment.is_override else 'No'}")
+    st.write(f"**Reason:** {reason or 'No reason recorded.'}")
+    st.write(f"**New stage:** {action.stage}")
     columns = st.columns(3, gap="large")
     columns[0].metric("Requested amount", fmt_inr(APPLICANT["requested_amount"]))
     columns[1].metric(
@@ -345,14 +359,14 @@ def _render_decision() -> None:
         f"{APPLICANT['tenure_months']} months · {results['rate']:.1%} p.a.",
     )
     st.metric("Estimated monthly EMI", fmt_inr(results["emi"]))
-    st.markdown("**Decision rationale**")
-    st.write(rationale)
-    st.markdown("**Illustrative next steps**")
-    st.write(
-        "Complete sanction documentation and authorized verification, then "
-        "perform applicable disbursement checks. No sanction or disbursement "
-        "takes place in this demo."
-    )
+    next_step = {
+        "Sanction": "Complete sanction documentation and authorized verification.",
+        "Escalated": "Refer the application to the next authorized credit officer.",
+        "Rejected": "No further loan processing is shown for this illustrative case.",
+        "Awaiting documents": "Collect the requested documents and resume review.",
+    }[action.stage]
+    st.markdown("**Next step**")
+    st.write(next_step)
     st.info(
         "This is a simulated result using synthetic applicant data, not a real "
         "loan sanction or disbursement."
@@ -426,7 +440,7 @@ def render() -> None:
     is_waiting = current_step == 1 and not st.session_state.get(
         "guided_demo_assessment_ready"
     )
-    override_invalid = current_step == 2 and not _reviewer_override_is_valid()
+    override_invalid = current_step == 2 and not _reviewer_decision_is_valid()
     with st.container(key="guided-demo-controls"):
         controls = st.columns(3, gap="large")
         controls[0].button(

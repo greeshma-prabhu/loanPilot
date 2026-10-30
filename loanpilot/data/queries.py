@@ -7,6 +7,11 @@ from uuid import uuid4
 
 import pandas as pd
 
+from loanpilot.decisions import (
+    HUMAN_ACTIONS,
+    action_code_for_label,
+    evaluate_human_action,
+)
 from loanpilot.data.store import SQLiteStore
 
 _DEFAULT_STORE = SQLiteStore()
@@ -607,19 +612,6 @@ def get_human_review_cases(
     )
 
 
-def human_decision_is_override(ai_recommendation: str | None, decision: str) -> bool:
-    """Return whether a human outcome differs from the AI recommendation."""
-    expected_recommendations = {
-        "Approve": "Approve",
-        "Approve with conditions": "Approve",
-        "Modify terms": "Approve",
-        "Refer up": "Refer",
-        "Request documents": "Refer",
-        "Reject": "Decline",
-    }
-    return expected_recommendations.get(decision) != ai_recommendation
-
-
 def has_live_gemini_trace(store: SQLiteStore | None = None) -> bool:
     """Return whether a persisted assessment trace used Gemini live."""
     database = _store(store)
@@ -678,9 +670,7 @@ def record_human_decision(
     next_stage: str,
     store: SQLiteStore | None = None,
 ) -> None:
-    """Record a human review, enforce a reason, and update stage atomically."""
-    if len(reason.strip()) < 20:
-        raise ValueError("A written reason of at least 20 characters is required.")
+    """Record a human review and update stage atomically."""
     database = _store(store)
     with database.connection() as connection:
         application = connection.execute(
@@ -696,9 +686,15 @@ def record_human_decision(
             raise ValueError(f"Unknown application: {application_id}")
         if application["stage"] != "Human Review":
             raise ValueError("Only cases in Human Review can receive a decision.")
-        expected_override = human_decision_is_override(
-            application["ai_recommendation"], decision
-        )
+        action_code = action_code_for_label(decision)
+        expected_override = evaluate_human_action(
+            application["ai_recommendation"], action_code
+        ).is_override
+        action = HUMAN_ACTIONS[action_code]
+        if next_stage != action.stage:
+            raise ValueError(
+                f"Human decision {decision} must move the case to {action.stage}."
+            )
         if bool(is_override) != expected_override:
             raise ValueError("Override flag does not match the AI and human decisions.")
         if next_stage not in {

@@ -27,6 +27,7 @@ from loanpilot.components import (
     render_why,
     status_chip,
 )
+from loanpilot.decisions import HUMAN_ACTIONS, evaluate_human_action
 from loanpilot.data.queries import (
     get_agent_trace,
     get_application,
@@ -36,35 +37,11 @@ from loanpilot.data.queries import (
     get_disbursement,
     get_human_review_cases,
     get_sanction,
-    human_decision_is_override,
     record_human_decision,
 )
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
-
-ACTIONS = {
-    "approve": "Approve",
-    "approve_with_conditions": "Approve with conditions",
-    "modify_terms": "Modify terms",
-    "refer_up": "Refer up",
-    "reject": "Reject",
-    "request_documents": "Request documents",
-}
-_ACTION_STAGES = {
-    "approve": "Sanction",
-    "approve_with_conditions": "Sanction",
-    "modify_terms": "Sanction",
-    "refer_up": "Escalated",
-    "reject": "Rejected",
-    "request_documents": "Awaiting documents",
-}
-
-
-def is_override_decision(ai_decision: str | None, action_code: str) -> bool:
-    """Return whether the review action differs from the AI recommendation."""
-    return human_decision_is_override(ai_decision, ACTIONS.get(action_code, ""))
-
 
 def _age_days(submitted_at: str) -> int:
     """Return whole elapsed days from the ISO timestamp."""
@@ -86,6 +63,11 @@ def _open_ai_assessment() -> None:
 
 def _open_review_case(application_id: str) -> None:
     """Open the one expanded case panel, replacing any previous selection."""
+    for key in (
+        f"review_action_{application_id}",
+        f"decision_reason_{application_id}",
+    ):
+        st.session_state.pop(key, None)
     st.session_state["review_open"] = application_id
 
 
@@ -263,26 +245,24 @@ def _submit_review_decision(
     existing_emi: float,
     score: int | None,
 ) -> None:
-    """Read keyed widgets in the callback, persist the choice, then close the panel."""
+    """Read keyed widgets in the callback and persist the choice."""
     error_key = f"review_error_{application_id}"
     action_code = str(st.session_state.get(f"review_action_{application_id}", ""))
-    action = ACTIONS.get(action_code)
-    if action is None:
+    action_definition = HUMAN_ACTIONS.get(action_code)
+    if action_definition is None:
         st.session_state[error_key] = "Select a valid review action."
         return
+    action = action_definition.label
     reviewer = str(st.session_state.get("auth", {}).get("name", ""))
     if not reviewer:
         raise RuntimeError("An authenticated reviewer is required to save decisions.")
     reason = str(st.session_state.get(f"decision_reason_{application_id}", "")).strip()
-    if len(reason) < 20:
-        st.session_state[error_key] = "Enter a written reason of at least 20 characters."
-        return
 
     rate = pricing_rate(score)
     amount = float(st.session_state.get(f"modified_amount_{application_id}", default_amount))
     tenure = int(st.session_state.get(f"modified_tenure_{application_id}", default_tenure))
     conditions = list(st.session_state.get(f"conditions_{application_id}", DEFAULT_CONDITIONS))
-    override = is_override_decision(ai_decision, action_code)
+    override = evaluate_human_action(ai_decision, action_code).is_override
     try:
         if action_code in {"approve", "approve_with_conditions", "modify_terms"}:
             if rate is None:
@@ -308,7 +288,7 @@ def _submit_review_decision(
                 override,
                 reviewer,
                 datetime.now().isoformat(timespec="seconds"),
-                _ACTION_STAGES[action_code],
+                action_definition.stage,
                 store,
             )
     except ValueError as error:
@@ -318,7 +298,7 @@ def _submit_review_decision(
     saved = get_application(application_id, store)
     if saved.empty:
         raise RuntimeError(f"Could not reload the saved case {application_id}.")
-    st.session_state["review_open"] = None
+    st.session_state["review_filter"] = "All"
     st.session_state.pop(error_key, None)
 
 
@@ -338,14 +318,6 @@ def _render_decision_panel(
     )
     action_key = f"review_action_{application_id}"
     reason_key = f"decision_reason_{application_id}"
-    reviewer = str(st.session_state.get("auth", {}).get("name", ""))
-    default_action = {
-        "Approve": "approve",
-        "Refer": "refer_up",
-        "Decline": "reject",
-    }.get(str(summary["recommendation"]), "refer_up")
-    if action_key not in st.session_state:
-        st.session_state[action_key] = default_action
     amount = float(summary["application"]["requested_amount"])
     tenure = int(summary["application"]["tenure_months"])
     rate = pricing_rate(score)
@@ -353,16 +325,25 @@ def _render_decision_panel(
     with fields[0]:
         action_code = st.selectbox(
             "Action",
-            list(ACTIONS),
-            format_func=ACTIONS.__getitem__,
+            ["", *HUMAN_ACTIONS],
+            format_func=lambda code: (
+                "Choose an action" if not code else HUMAN_ACTIONS[code].label
+            ),
+            index=0,
             key=action_key,
         )
-        action = ACTIONS[action_code]
-        override = is_override_decision(summary["recommendation"], action_code)
-        if override:
-            st.warning(
-                "This differs from the AI recommendation (CP-8.2): a written reason is required."
+        action_definition = HUMAN_ACTIONS.get(action_code)
+        assessment = (
+            evaluate_human_action(summary["recommendation"], action_code)
+            if action_definition
+            else None
+        )
+        if assessment and assessment.differs:
+            notice = (
+                "This differs from the AI recommendation (CP-8.2). "
+                "You may add a reason to document your decision."
             )
+            st.warning(f"Override: {notice}" if assessment.is_override else notice)
         st.caption("Your decision is recorded under your signed-in reviewer account.")
         if action_code == "modify_terms":
             if rate is None:
@@ -395,18 +376,14 @@ def _render_decision_panel(
                     st.warning("Modified terms remain above the 45% FOIR pass limit.")
     with fields[1]:
         with st.container(key=f"hr-reason-{application_id}", border=True):
-            st.markdown("**Required · written reason**")
-            reason_text = st.text_area(
-                "Explain your decision (minimum 20 characters)",
+            st.markdown("**Decision reason · optional**")
+            st.text_area(
+                "Explain your decision (optional)",
                 key=reason_key,
                 height=130,
+                help="Add any details you want to keep with this decision.",
             )
-            reason_length = len(reason_text)
-            st.caption(f"{reason_length} / 20 characters")
-            if len(reason_text.strip()) < 20:
-                st.warning("Enter at least 20 non-whitespace characters to continue.")
-            else:
-                st.success("Minimum written-reason length met.")
+            st.caption("You can submit a decision with or without a reason.")
 
     conditions = list(DEFAULT_CONDITIONS)
     if action_code == "approve_with_conditions":
@@ -416,12 +393,13 @@ def _render_decision_panel(
             default=list(DEFAULT_CONDITIONS),
             key=f"conditions_{application_id}",
         )
-    next_stage = _ACTION_STAGES[action_code]
-    st.markdown(
-        f"**You are about to {action.upper()} {summary['application']['name']}: "
-        f"stage will become {next_stage}.**"
-    )
-    reason_ready = len(reason_text.strip()) >= 20
+    if action_definition:
+        st.markdown(
+            f"**You are about to {action_definition.label.upper()} "
+            f"{summary['application']['name']}: stage will become "
+            f"{action_definition.stage}.**"
+        )
+    action_ready = action_definition is not None
     conditions_ready = action_code != "approve_with_conditions" or bool(conditions)
     rate_ready = action_code not in {"approve", "approve_with_conditions", "modify_terms"} or rate is not None
     if not conditions_ready:
@@ -440,7 +418,7 @@ def _render_decision_panel(
             existing_emi,
             score,
         ),
-        disabled=not (reason_ready and conditions_ready and rate_ready),
+        disabled=not (action_ready and conditions_ready and rate_ready),
         type="primary",
         width="stretch",
     )
@@ -563,15 +541,27 @@ def _submit_disbursement(application_id: str, store: SQLiteStore) -> None:
 
 def _render_readonly_panel(application_id: str, row: pd.Series, store: SQLiteStore) -> None:
     """Show the saved human outcome and approved-case artifacts without an edit form."""
-    st.subheader(f"Saved decision · {row['human_decision'] or _case_status(str(row['stage']))[0]}")
+    st.subheader("Decision result")
+    st.write(f"**Your decision:** {row['human_decision'] or 'Unavailable'}")
+    st.write(f"**AI recommendation:** {row['ai_recommendation'] or 'Unavailable'}")
+    st.write(f"**Override:** {'Yes' if bool(row['is_override']) else 'No'}")
+    st.write(f"**Reason:** {row['human_reason'] or 'No written reason recorded.'}")
+    st.write(f"**New stage:** {row['stage']}")
+    next_steps = {
+        "Sanction": "Complete sanction conditions and authorized verification.",
+        "Disbursed (simulated)": "The simulated disbursement is complete.",
+        "Rejected": "No further loan processing is required.",
+        "Escalated": "Refer the case to the next authorized credit officer.",
+        "Awaiting documents": "Collect the requested documents and resume review.",
+        "Approved": "Complete sanction documentation and authorized verification.",
+    }
+    st.write(f"**Next step:** {next_steps.get(str(row['stage']), 'Review the case status.')}")
     if str(row["human_decision"] or "").casefold().startswith("approve") or str(
         row["human_decision"] or ""
     ).casefold() == "modify terms":
         st.write("**Approved by Demo Analyst**")
     else:
         st.write(f"**Reviewer:** {row['decided_by'] or 'Unavailable'}")
-    st.write(f"**Reason:** {row['human_reason'] or 'No written reason recorded.'}")
-    st.write(f"**Override:** {'Yes' if bool(row['is_override']) else 'No'}")
     st.write(f"**Time:** {row['decided_at'] or 'Unavailable'}")
     if row["stage"] not in {"Sanction", "Disbursed (simulated)"}:
         return

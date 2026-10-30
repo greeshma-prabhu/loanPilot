@@ -18,6 +18,11 @@ from loanpilot.data.demo_seed import seed_synthetic_applications
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
+from loanpilot.decisions import (
+    HUMAN_ACTIONS,
+    action_code_for_label,
+    evaluate_human_action,
+)
 from loanpilot.pages import human_review
 
 _REASON = "Reviewed the evidence and documented the decision rationale."
@@ -170,12 +175,12 @@ def _fake_sanction(
 ):
     """Persist approval-stage human decisions without writing a PDF in UI tests."""
     application = get_application(application_id, store).iloc[0]
-    action_code = next(code for code, label in human_review.ACTIONS.items() if label == decision_action)
+    action_code = action_code_for_label(decision_action)
     record_human_decision(
         application_id,
         decision_action,
         reason,
-        human_review.is_override_decision(application["ai_recommendation"], action_code),
+        evaluate_human_action(application["ai_recommendation"], action_code).is_override,
         reviewer,
         datetime.now().isoformat(timespec="seconds"),
         "Sanction",
@@ -196,6 +201,11 @@ def test_each_action_persists_matching_decision_stage_and_audit(
     app = _app(assessed_pair).run()
     app.button(key=f"review_open_{application_id}").click().run()
     action_key = f"review_action_{application_id}"
+    assert app.selectbox(key=action_key).value == ""
+    assert app.selectbox(key=action_key).options == [
+        "Choose an action",
+        *(action.label for action in HUMAN_ACTIONS.values()),
+    ]
     app.selectbox(key=action_key).select(action_code).run()
     assert app.session_state[action_key] == action_code
     app.text_area(key=f"decision_reason_{application_id}").set_value(_REASON).run()
@@ -211,7 +221,11 @@ def test_each_action_persists_matching_decision_stage_and_audit(
     assert event["actor"] == "Test Reviewer"
     assert stage in event["detail"]
     assert application_id not in set(get_review_queue(assessed_pair)["application_id"])
-    assert app.session_state["review_open"] is None
+    assert app.session_state["review_open"] == application_id
+    assert any(item.value == "Decision result" for item in app.subheader)
+    result_text = "\n".join(element.value for element in app.markdown)
+    assert f"Your decision:** {decision}" in result_text
+    assert f"New stage:** {stage}" in result_text
     assert not any(
         "Imran Sheikh:" in message.value or "Meera Iyer:" in message.value
         for message in app.success
@@ -230,18 +244,50 @@ def test_decline_reject_has_no_override_notice_but_decline_approval_does(
 
     app.selectbox(key=f"review_action_{_FIRST_CASE}").select("approve").run()
     assert any("CP-8.2" in warning.value for warning in app.warning)
-    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value("Too short").run()
-    assert any("9 / 20 characters" in item.value for item in app.caption)
-    assert not any("Minimum written-reason length met." in item.value for item in app.success)
-    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled
-    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
-    assert any(f"{len(_REASON)} / 20 characters" in item.value for item in app.caption)
-    assert any("Minimum written-reason length met." in item.value for item in app.success)
-    assert not app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value("OK").run()
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled is False
     app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
     saved = get_application(_FIRST_CASE, assessed_pair).iloc[0]
     assert saved["human_decision"] == "Approve"
     assert saved["is_override"] == 1
+    assert saved["human_reason"] == "OK"
+
+
+def test_human_review_submit_allows_empty_reason(assessed_pair, monkeypatch) -> None:
+    """Selecting an action is enough to submit; a written reason is optional."""
+    monkeypatch.setattr(human_review, "approve_and_sanction", _fake_sanction)
+    app = _app(assessed_pair).run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("reject").run()
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled is False
+    app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
+    saved = get_application(_FIRST_CASE, assessed_pair).iloc[0]
+    assert saved["human_decision"] == "Reject"
+    assert saved["human_reason"] == ""
+
+
+@pytest.mark.parametrize("recommendation", ("Approve", "Refer", "Decline"))
+def test_action_control_is_empty_and_offers_all_actions(
+    assessed_pair, recommendation
+) -> None:
+    """Every AI recommendation presents the same complete, initially empty action list."""
+    assessed_pair.execute(
+        "UPDATE cur_decisions SET ai_recommendation = ? WHERE application_id = ?",
+        (recommendation, _FIRST_CASE),
+    )
+    app = _app(assessed_pair).run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    action_select = app.selectbox(key=f"review_action_{_FIRST_CASE}")
+    assert action_select.value == ""
+    assert action_select.options == [
+        "Choose an action",
+        *(action.label for action in HUMAN_ACTIONS.values()),
+    ]
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    action_select.select("reject").run()
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled is False
 
 
 def test_action_selection_survives_rerun_and_cases_do_not_share_form_state(assessed_pair) -> None:
@@ -255,7 +301,7 @@ def test_action_selection_survives_rerun_and_cases_do_not_share_form_state(asses
 
     app.button(key=f"close_review_details_{_FIRST_CASE}").click().run()
     app.button(key=f"review_open_{_SECOND_CASE}").click().run()
-    assert app.selectbox(key=f"review_action_{_SECOND_CASE}").value == "approve"
+    assert app.selectbox(key=f"review_action_{_SECOND_CASE}").value == ""
     assert app.text_area(key=f"decision_reason_{_SECOND_CASE}").value == ""
 
 
@@ -297,11 +343,10 @@ def test_status_pills_are_the_only_queue_summary_controls(assessed_pair, monkeyp
     app.text_area(key=f"decision_reason_{_FIRST_CASE}").set_value(_REASON).run()
     app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
 
-    assert app.session_state["review_open"] is None
-    assert not any(button.key == f"review_open_{_FIRST_CASE}" for button in app.button)
-    app.button(key="review_filter_rejected").click().run()
-    assert app.button(key=f"review_open_{_FIRST_CASE}").label == "View"
-    assert any("Rejected" in element.value for element in app.markdown)
+    assert app.session_state["review_open"] == _FIRST_CASE
+    assert app.session_state["review_filter"] == "All"
+    assert any(item.value == "Decision result" for item in app.subheader)
+    assert any("New stage:** Rejected" in item.value for item in app.markdown)
 
 
 def test_review_queue_only_shows_requested_applicant_fields(assessed_pair) -> None:

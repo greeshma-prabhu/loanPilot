@@ -14,11 +14,11 @@ from loanpilot.data.queries import (
     get_bureau,
     get_documents,
     get_kyc,
-    human_decision_is_override,
     list_intake_customers,
     list_applications,
     record_human_decision,
 )
+from loanpilot.decisions import action_code_for_label, evaluate_human_action
 from loanpilot.data.demo_seed import seed_synthetic_applications
 from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
@@ -490,7 +490,9 @@ def test_rerun_is_blocked_after_human_decision(tmp_path, monkeypatch) -> None:
         application_id,
         decision,
         "Approved after reviewing all synthetic evidence.",
-        human_decision_is_override(result["recommendation"], decision),
+        evaluate_human_action(
+            result["recommendation"], action_code_for_label(decision)
+        ).is_override,
         "Demo Reviewer",
         "2026-10-29T12:00:00",
         "Sanction",

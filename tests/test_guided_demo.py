@@ -42,8 +42,8 @@ def test_assessment_wait_is_five_seconds_and_nonblocking(
     assert guided_demo._assessment_remaining_seconds(100.0, now=now) == remaining
 
 
-def test_demo_progression_override_rationale_and_restart() -> None:
-    """Every stage is navigable, overrides require a reason, and restart is local."""
+def test_demo_progression_allows_nonrecommended_action_without_reason() -> None:
+    """Every stage is navigable; a human action does not require a reason."""
     app = _guided_demo_app().run()
     assert not app.exception
     assert any(
@@ -58,7 +58,7 @@ def test_demo_progression_override_rationale_and_restart() -> None:
     app.button(key="guided_demo_next").click().run()
     assert app.session_state["guided_demo_step"] == 1
     assert app.session_state["guided_demo_assessment_started_at"]
-    assert app.progress
+    assert any("Step 2 of" in item.value for item in app.caption)
     app.session_state["guided_demo_assessment_ready"] = True
     app.run()
     assert not app.exception
@@ -67,16 +67,21 @@ def test_demo_progression_override_rationale_and_restart() -> None:
     app.button(key="guided_demo_next").click().run()
     assert app.session_state["guided_demo_step"] == 2
     assert not app.exception
-    app.radio(key="guided_demo_reviewer_outcome").set_value(
-        "Override: Refer for additional review"
-    ).run()
-    assert app.button(key="guided_demo_next").disabled
-    app.text_area(key="guided_demo_reviewer_rationale").set_value(
-        "Additional verification is needed."
-    ).run()
+    action_select = app.selectbox(key="guided_demo_action")
+    assert action_select.value == ""
+    assert action_select.options == [
+        "Choose an action",
+        *(action.label for action in guided_demo.HUMAN_ACTIONS.values()),
+    ]
+    app.selectbox(key="guided_demo_action").select("refer_up").run()
+    assert app.button(key="guided_demo_next").disabled is False
     app.button(key="guided_demo_next").click().run()
     assert app.session_state["guided_demo_step"] == 3
-    assert any("Referred – Illustrative Demo" in item.value for item in app.markdown)
+    decision_text = "\n".join(item.value for item in app.markdown)
+    assert "Illustrative Demo" in decision_text
+    assert "Your decision:** Refer up" in decision_text
+    assert "AI recommendation:** Approve" in decision_text
+    assert "Reason:** No reason recorded." in decision_text
     assert not any(button.label == "Next Step" for button in app.button)
     assert any(button.label == "Previous Step" for button in app.button)
     assert any(button.label == "Restart Demo" for button in app.button)

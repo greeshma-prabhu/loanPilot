@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from loanpilot import config
-from loanpilot.agent.policy_engine import pricing_rate
+from loanpilot.agent.policy_engine import pricing_rate, pricing_rates
 from loanpilot.agent.sanction import (
     DEFAULT_CONDITIONS,
     approve_and_sanction,
@@ -268,6 +268,16 @@ def _submit_review_decision(
     reason = str(st.session_state.get(f"decision_reason_{application_id}", "")).strip()
 
     rate = pricing_rate(score)
+    if rate is None:
+        manual_rate = st.session_state.get(f"manual_rate_{application_id}", "")
+        try:
+            rate = float(manual_rate) if manual_rate != "" else None
+        except (TypeError, ValueError):
+            st.session_state[error_key] = "Choose a valid CP-7.1 rate."
+            return
+        if rate is not None and rate not in pricing_rates():
+            st.session_state[error_key] = "Choose a valid CP-7.1 rate."
+            return
     amount = float(st.session_state.get(f"modified_amount_{application_id}", default_amount))
     tenure = int(st.session_state.get(f"modified_tenure_{application_id}", default_tenure))
     conditions = list(st.session_state.get(f"conditions_{application_id}", DEFAULT_CONDITIONS))
@@ -353,6 +363,25 @@ def _render_decision_panel(
             if action_definition
             else None
         )
+        rate = pricing_rate(score)
+        if (
+            rate is None
+            and action_code
+            in {"approve", "approve_with_conditions", "modify_terms"}
+        ):
+            st.info(
+                "No CP-7.1 rate matches this case. Choose a configured rate to "
+                "record the human approval; policy rates remain unchanged."
+            )
+            manual_rate = st.selectbox(
+                "Annual rate for this approval",
+                ["", *pricing_rates()],
+                format_func=lambda value: (
+                    "Choose a rate" if value == "" else f"{value:.2%} p.a."
+                ),
+                key=f"manual_rate_{application_id}",
+            )
+            rate = float(manual_rate) if manual_rate != "" else None
         if assessment and assessment.differs:
             notice = (
                 "This differs from the AI recommendation (CP-8.2). "
@@ -361,8 +390,6 @@ def _render_decision_panel(
             st.warning(f"Override: {notice}" if assessment.is_override else notice)
         st.caption("Your decision is recorded under your signed-in reviewer account.")
         if action_code == "modify_terms":
-            if rate is None:
-                st.warning("No CP-7.1 grid rate is available; terms cannot be recalculated.")
             amount = st.number_input(
                 "Modified amount (Rs)",
                 min_value=50000.0,
@@ -416,7 +443,10 @@ def _render_decision_panel(
         )
     action_ready = action_definition is not None
     conditions_ready = action_code != "approve_with_conditions" or bool(conditions)
-    rate_ready = action_code not in {"approve", "approve_with_conditions", "modify_terms"} or rate is not None
+    rate_ready = (
+        action_code not in {"approve", "approve_with_conditions", "modify_terms"}
+        or rate is not None
+    )
     if not conditions_ready:
         st.warning("Select at least one condition before submitting.")
     st.button(

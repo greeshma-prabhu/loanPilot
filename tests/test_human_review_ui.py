@@ -288,6 +288,37 @@ def test_reviewer_can_reject_an_ai_approved_case(assessed_pair) -> None:
     assert saved["human_reason"] == "Do not approve"
 
 
+def test_reviewer_can_approve_ai_decline_without_a_grid_rate(
+    assessed_pair, monkeypatch
+) -> None:
+    """A human approval can use an explicit configured rate if CP-7.1 has no match."""
+    captured = {}
+
+    def fake_sanction(*args, **kwargs):
+        captured["rate"] = args[3]
+        return _fake_sanction(*args, **kwargs)
+
+    monkeypatch.setattr(human_review, "pricing_rate", lambda score: None)
+    monkeypatch.setattr(human_review, "approve_and_sanction", fake_sanction)
+    app = _app(assessed_pair).run()
+    app.button(key=f"review_open_{_FIRST_CASE}").click().run()
+    app.selectbox(key=f"review_action_{_FIRST_CASE}").select("Approve").run()
+
+    rate_key = f"manual_rate_{_FIRST_CASE}"
+    assert app.selectbox(key=rate_key).value == ""
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled
+    app.selectbox(key=rate_key).select(0.16).run()
+    assert app.button(key=f"submit_review_{_FIRST_CASE}").disabled is False
+    app.button(key=f"submit_review_{_FIRST_CASE}").click().run()
+
+    saved = get_application(_FIRST_CASE, assessed_pair).iloc[0]
+    assert captured["rate"] == 0.16
+    assert saved["ai_recommendation"] == "Decline"
+    assert saved["human_decision"] == "Approve"
+    assert bool(saved["is_override"])
+    assert saved["stage"] == "Sanction"
+
+
 @pytest.mark.parametrize("recommendation", ("Approve", "Refer", "Decline"))
 def test_action_control_is_empty_and_offers_all_actions(
     assessed_pair, recommendation

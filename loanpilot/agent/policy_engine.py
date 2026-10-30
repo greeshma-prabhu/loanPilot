@@ -28,6 +28,19 @@ def pricing_rate(score: int | float | None) -> float | None:
     return None
 
 
+def pricing_rates() -> tuple[float, ...]:
+    """Return the distinct annual rates configured by CP-7.1."""
+    for clause in _load_policy()["clauses"]:
+        if clause["clause_id"] == "CP-7.1":
+            return tuple(
+                dict.fromkeys(
+                    float(rate["annual_rate"])
+                    for rate in clause["criteria"]["rates"]
+                )
+            )
+    raise ValueError("CP-7.1 pricing rates are missing from the policy.")
+
+
 def _load_policy() -> dict[str, Any]:
     """Load the illustrative policy from its project-rooted JSON resource."""
     with Path(POLICY_PATH).open(encoding="utf-8") as policy_file:

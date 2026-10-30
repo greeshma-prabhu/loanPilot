@@ -98,7 +98,7 @@ def _render_document_list(
                 and document["processing_error"]
             ):
                 st.caption(str(document["processing_error"]))
-            view_column, delete_column = st.columns(2)
+            view_column, delete_column = st.columns(2, gap="large")
             with view_column:
                 if st.button(
                     "Read / View",
@@ -124,7 +124,7 @@ def _render_document_list(
             "Confirm deleting this PDF and its extracted text from the library."
         )
         st.write(str(pending["original_filename"]))
-        confirm, cancel = st.columns(2)
+        confirm, cancel = st.columns(2, gap="large")
         with confirm:
             if st.button(
                 "Confirm delete",

@@ -4,17 +4,11 @@ import json
 import streamlit as st
 
 from loanpilot import config
-from loanpilot.config import DOCS_DIR
 from loanpilot.theme import render_disclaimer, render_header
 
 def _render_research_basis() -> None:
-    """Show the research note or a neutral statement when none is available."""
-    st.subheader("Research basis")
-    note = DOCS_DIR / "research_note.md"
-    if note.is_file():
-        st.markdown(note.read_text(encoding="utf-8"))
-    else:
-        st.caption("No external research note has been added for this demo.")
+    """Direct readers to the consolidated research note section."""
+    st.caption("See About & FAQ, Research note.")
 
 
 def _render_lakehouse_diagram() -> None:
@@ -139,7 +133,7 @@ def render() -> None:
         "clean joined records, and serves the features needed for a decision."
     )
     _render_lakehouse_diagram()
-    outcomes = st.columns(4)
+    outcomes = st.columns(4, gap="large")
     for column, title, detail in zip(
         outcomes,
         (
@@ -171,7 +165,7 @@ def render() -> None:
     )
     _render_journey_diagram()
     st.markdown("### Guardrails")
-    guardrails = st.columns(4)
+    guardrails = st.columns(4, gap="large")
     for column, title, explanation in zip(
         guardrails,
         ("Policy as code", "No AI sanction", "Reasons for overrides", "Audit log"),
@@ -187,7 +181,7 @@ def render() -> None:
             st.markdown(f"**{title}**")
             st.caption(explanation)
     st.markdown("### Three-step roadmap")
-    roadmap = st.columns(3)
+    roadmap = st.columns(3, gap="large")
     roadmap_items = (
         ("1 · Assist", "Help officers organize evidence and apply policy consistently."),
         ("2 · Sample", "Consider partial straight-through handling for clean cases, with human sampling and controls."),

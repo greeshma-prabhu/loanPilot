@@ -19,7 +19,43 @@ def _page_files():
 def test_pages_do_not_use_deprecated_container_width() -> None:
     """Use Streamlit's current width API throughout every page."""
     for path in _page_files():
-        assert "use_container_width" not in path.read_text(encoding="utf-8")
+        assert ("use_container_" + "width") not in path.read_text(encoding="utf-8")
+
+
+def test_shared_theme_defines_spacing_tokens() -> None:
+    """Keep global page spacing on the shared eight-pixel scale."""
+    from loanpilot import theme
+
+    for pixels in (8, 16, 24, 40, 64):
+        assert f"--lp-space-{pixels}: {pixels}px;" in theme._CSS
+
+
+def test_columns_use_large_shared_gaps() -> None:
+    """Keep side-by-side content comfortably separated on every page."""
+    for path in _page_files() + [PROJECT_ROOT / "loanpilot" / "components.py"]:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or ast.unparse(node.func) != "st.columns":
+                continue
+            assert any(
+                keyword.arg == "gap"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == "large"
+                for keyword in node.keywords
+            ), f"{path.name}:{node.lineno}"
+
+
+def test_style_tests_do_not_use_empty_write_spacers() -> None:
+    """Avoid adding blank Streamlit writes as layout spacing hacks."""
+    tree = ast.parse(open(__file__, encoding="utf-8").read())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or ast.unparse(node.func) != "st.write":
+            continue
+        assert not (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == ""
+        )
 
 
 def test_pages_do_not_contain_hard_coded_absolute_paths() -> None:

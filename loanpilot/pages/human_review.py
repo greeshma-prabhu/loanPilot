@@ -153,7 +153,7 @@ def _render_queue_filters(store: SQLiteStore) -> tuple[pd.DataFrame, str]:
             "Rejected": int((stages == "Rejected").sum()),
             "All": len(all_cases),
         }
-    columns = st.columns(4)
+    columns = st.columns(4, gap="large")
     for column, label in zip(columns, ("Pending", "Approved", "Rejected", "All"), strict=True):
         column.button(
             f"{label} · {counts[label]}",
@@ -184,7 +184,11 @@ def _render_queue_row(row: pd.Series) -> None:
     recommendation = str(row["ai_recommendation"] or "—")
     risk = str(row["risk_band"] or "—")
     decision_state = stage != "Human Review"
-    columns = st.columns([2.2, 1.2, 1.0, 0.9, 1.3, 0.8], vertical_alignment="center")
+    columns = st.columns(
+        [2.2, 1.2, 1.0, 0.9, 1.3, 0.8],
+        vertical_alignment="center",
+        gap="large",
+    )
     with columns[0]:
         st.markdown(
             f'<strong>{escape(str(row["applicant"]))}</strong>',
@@ -345,7 +349,7 @@ def _render_decision_panel(
     amount = float(summary["application"]["requested_amount"])
     tenure = int(summary["application"]["tenure_months"])
     rate = pricing_rate(score)
-    fields = st.columns(2)
+    fields = st.columns(2, gap="large")
     with fields[0]:
         action_code = st.selectbox(
             "Action",
@@ -625,7 +629,7 @@ def _render_readonly_panel(application_id: str, row: pd.Series, store: SQLiteSto
         bool(st.session_state.get(f"hr_condition_{application_id}_{index}", False))
         for index in range(len(conditions))
     )
-    button_columns = st.columns([1, 2])
+    button_columns = st.columns([1, 2], gap="large")
     with button_columns[0]:
         st.button(
             "Run simulated disbursement",
@@ -648,7 +652,7 @@ def _render_case_panel(
     store: SQLiteStore,
 ) -> None:
     """Render the one expanded inline detail panel for a queue row."""
-    panel_columns = st.columns([5, 1])
+    panel_columns = st.columns([5, 1], gap="large")
     with panel_columns[0]:
         st.markdown(f"### {row['applicant']}")
     with panel_columns[1]:
@@ -720,7 +724,9 @@ def render(store: SQLiteStore | None = None) -> None:
         else cases
     )
     with st.container(border=True):
-        heading_columns = st.columns([2.4, 1, .85, .75, 1.4, .75])
+        heading_columns = st.columns(
+            [2.4, 1, .85, .75, 1.4, .75], gap="large"
+        )
         for column, label in zip(heading_columns, labels, strict=True):
             with column:
                 st.markdown(

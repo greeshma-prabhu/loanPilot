@@ -59,6 +59,17 @@ _GLOSSARY = [
     ("Agent", "Software that follows a defined workflow and calls tools; it is not an independent loan decision-maker."),
 ]
 
+_SECTIONS = (
+    ("about", "About"),
+    ("faq", "FAQ"),
+    ("real_vs_simulated", "Real vs simulated"),
+    ("research_note", "Research note"),
+    ("ai_usage_log", "AI usage log"),
+    ("assumptions", "Assumptions"),
+    ("glossary", "Glossary"),
+    ("contact", "Contact"),
+)
+
 
 def _render_optional_reference(
     markdown_path: Path,
@@ -84,14 +95,21 @@ def _render_optional_reference(
 
 
 def render() -> None:
-    """Render one selected reference section from the shared sidebar."""
+    """Render the project references in the eight About & FAQ tabs."""
     render_disclaimer()
     render_header(
         "About & FAQ",
         "What this demonstration can show, what it cannot claim, and where its assumptions come from.",
         "REFERENCE  /  PROJECT NOTES",
     )
-    section = st.session_state.get("about_faq_section", "about")
+    tabs = st.tabs([label for _, label in _SECTIONS])
+    for (section, _), tab in zip(_SECTIONS, tabs, strict=True):
+        with tab:
+            _render_section(section)
+
+
+def _render_section(section: str) -> None:
+    """Render one About & FAQ section inside its tab."""
     if section == "about":
         st.subheader("Aarambh Bank · LoanPilot")
         st.info(
@@ -113,9 +131,10 @@ def render() -> None:
         )
     elif section == "faq":
         st.subheader("Frequently asked questions")
-        for question, answer in _FAQ:
-            with st.expander(question):
-                st.write(answer)
+        with st.container(key="faq-items"):
+            for question, answer in _FAQ:
+                with st.expander(question):
+                    st.write(answer)
     elif section == "real_vs_simulated":
         st.subheader("Real vs simulated")
         st.caption(
@@ -124,43 +143,49 @@ def render() -> None:
         )
         st.dataframe(ledger_frame(), width="stretch", hide_index=True)
     elif section == "research_note":
-        st.subheader("Research basis")
+        st.subheader("Research note")
         _render_optional_reference(
-            config.DOCS_DIR / "research_note.md",
-            config.DOCS_DIR / "research_note.pdf",
+            config.PROJECT_ROOT / "docs" / "research_note.md",
+            config.PROJECT_ROOT / "docs" / "research_note.pdf",
             "Research note to be added.",
         )
     elif section == "ai_usage_log":
         st.subheader("AI usage log")
         _render_optional_reference(
-            config.DOCS_DIR / "ai_usage_log.md",
-            config.DOCS_DIR / "ai_usage_log.pdf",
+            config.PROJECT_ROOT / "docs" / "ai_usage_log.md",
+            config.PROJECT_ROOT / "docs" / "ai_usage_log.pdf",
             "AI usage log to be added.",
         )
     elif section == "assumptions":
         st.subheader("Assumptions")
-        with config.ILLUSTRATIVE_METRICS_PATH.open(encoding="utf-8") as metrics_file:
-            metrics = json.load(metrics_file)
-        st.markdown(
-            "- The portfolio and all identifiers are synthetic.\n"
-            "- Bureau and KYC results are mock responses.\n"
-            "- Policy thresholds and prices are illustrative demo settings.\n"
-            "- Gemini is optional and cannot change deterministic outcomes.\n"
-            "- Demo-grade sign-in: sessions persist for up to 7 days or until sign out; there is no MFA or single sign-on.\n"
-            "- Disbursement is simulated; generated PDFs contain synthetic content."
-        )
-        st.markdown("#### Illustrative turnaround inputs")
-        st.write(
-            f"Baseline: {float(metrics['baseline_turnaround_days']):g} days. "
-            f"Demo assumption: {float(metrics['demo_turnaround_days']):g} days."
-        )
-        st.caption(metrics["source"])
-        st.markdown("#### Limitations")
-        st.write(
-            "This prototype is not a production credit platform. It does not provide "
-            "identity verification, live bureau access, a secure customer channel, "
-            "automated alerts or regulatory approval."
-        )
+        assumptions_path = config.PROJECT_ROOT / "docs" / "assumptions.md"
+        if assumptions_path.is_file():
+            st.markdown(assumptions_path.read_text(encoding="utf-8"))
+        else:
+            with config.ILLUSTRATIVE_METRICS_PATH.open(
+                encoding="utf-8"
+            ) as metrics_file:
+                metrics = json.load(metrics_file)
+            st.markdown(
+                "- The portfolio and all identifiers are synthetic.\n"
+                "- Bureau and KYC results are mock responses.\n"
+                "- Policy thresholds and prices are illustrative demo settings.\n"
+                "- Gemini is optional and cannot change deterministic outcomes.\n"
+                "- Demo-grade sign-in: sessions persist for up to 7 days or until sign out; there is no MFA or single sign-on.\n"
+                "- Disbursement is simulated; generated PDFs contain synthetic content."
+            )
+            st.markdown("#### Illustrative turnaround inputs")
+            st.write(
+                f"Baseline: {float(metrics['baseline_turnaround_days']):g} days. "
+                f"Demo assumption: {float(metrics['demo_turnaround_days']):g} days."
+            )
+            st.caption(metrics["source"])
+            st.markdown("#### Limitations")
+            st.write(
+                "This prototype is not a production credit platform. It does not provide "
+                "identity verification, live bureau access, a secure customer channel, "
+                "automated alerts or regulatory approval."
+            )
     elif section == "glossary":
         st.subheader("Glossary")
         st.dataframe(
@@ -174,7 +199,3 @@ def render() -> None:
         st.write("Aarambh Bank · LoanPilot demonstration team")
         st.write("Email: loanpilot-demo@example.invalid")
         st.write("Telephone: +91 00000 00000")
-    else:
-        st.session_state["about_faq_section"] = "about"
-        st.subheader("Aarambh Bank · LoanPilot")
-        st.info("Demonstration with synthetic data. Not a real bank system or credit decision.")

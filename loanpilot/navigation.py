@@ -61,28 +61,22 @@ def _create_page_maps():
             about_faq.render, title="About & FAQ", url_path="about-faq"
         ),
     }
-    reference_pages = {
-        "about_faq": st.Page(
-            about_faq.render, title="About & FAQ", url_path="about-faq"
-        )
-    }
     navigation = {
         "Operate": list(operate_pages.values()),
         "Know more": list(know_more_pages.values()),
     }
-    return operate_pages, know_more_pages, reference_pages, navigation
+    return operate_pages, know_more_pages, navigation
 
 
-OPERATE_PAGES, KNOW_MORE_PAGES, REFERENCE_PAGES, NAVIGATION = _create_page_maps()
+OPERATE_PAGES, KNOW_MORE_PAGES, NAVIGATION = _create_page_maps()
 
 
 def build_navigation():
     """Refresh page objects so no st.Page instance is run twice across reruns."""
-    global OPERATE_PAGES, KNOW_MORE_PAGES, REFERENCE_PAGES, NAVIGATION
+    global OPERATE_PAGES, KNOW_MORE_PAGES, NAVIGATION
     (
         OPERATE_PAGES,
         KNOW_MORE_PAGES,
-        REFERENCE_PAGES,
         NAVIGATION,
     ) = _create_page_maps()
     return OPERATE_PAGES, KNOW_MORE_PAGES, NAVIGATION

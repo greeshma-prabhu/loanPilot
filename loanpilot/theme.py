@@ -23,7 +23,7 @@ _CSS = """
     }
     [data-testid="stMainBlockContainer"] {
         width: 100% !important;
-        max-width: 1280px !important;
+        max-width: 1100px !important;
         min-width: 0 !important;
     }
     [data-testid="stMain"] {
@@ -153,7 +153,6 @@ _CSS = """
         padding-top: 4.3rem;
         padding-bottom: 3rem;
     }
-    [data-testid="stVerticalBlock"] { gap: .8rem; }
     [data-testid="stMarkdownContainer"],
     [data-testid="stWidgetLabel"],
     [data-testid="stText"],
@@ -230,7 +229,6 @@ _CSS = """
         color: #11776f;
         background: #eef7f6;
     }
-    [data-testid="stTabs"] [data-testid="stVerticalBlock"] { gap: .7rem; }
     [data-testid="stProgress"] > div > div > div { background: #138b83; }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
         font-size: 14px;
@@ -661,22 +659,6 @@ _CSS = """
     [data-testid="stSidebar"] .st-key-sidebar-nav {
         flex: 0 0 auto;
     }
-    [data-testid="stSidebar"] .st-key-sidebar-nav [data-testid="stPageLink"] {
-        margin-bottom: .35rem;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-reference-links [data-testid="stVerticalBlock"] {
-        gap: .35rem !important;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-reference-links button {
-        min-height: 2.55rem;
-        justify-content: flex-start;
-        border-radius: 10px;
-        text-align: left;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-reference-links button:hover {
-        background: #f3f8f8 !important;
-        border-color: #b7d8d3 !important;
-    }
     [data-testid="stSidebar"] .st-key-sidebar-layout > div:has(.st-key-sidebar-bottom-area) {
         margin-top: auto;
     }
@@ -921,9 +903,114 @@ _CSS = """
     [data-testid="stAlert"] {
         border-radius: 12px;
     }
+    :root {
+        --lp-space-8: 8px;
+        --lp-space-16: 16px;
+        --lp-space-24: 24px;
+        --lp-space-40: 40px;
+        --lp-space-64: 64px;
+    }
+    [data-testid="stMainBlockContainer"] {
+        width: 100% !important;
+        max-width: 1100px !important;
+        padding: var(--lp-space-40) var(--lp-space-24) 48px !important;
+        box-sizing: border-box !important;
+    }
+    .block-container {
+        width: 100%;
+        max-width: 1100px;
+        padding: 0 !important;
+        box-sizing: border-box;
+    }
+    [data-testid="stVerticalBlock"] {
+        gap: var(--lp-space-16) !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 20px !important;
+    }
+    [data-testid="stMetric"] {
+        padding: 20px !important;
+    }
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stWidgetLabel"],
+    [data-testid="stText"],
+    [data-testid="stAlert"] {
+        line-height: 1.6 !important;
+    }
+    [data-testid="stMarkdownContainer"] p {
+        margin-bottom: 12px;
+    }
+    [data-testid="stMainBlockContainer"] h2 {
+        margin-top: var(--lp-space-40) !important;
+        margin-bottom: var(--lp-space-16) !important;
+    }
+    [data-testid="stMainBlockContainer"] h3 {
+        margin-top: var(--lp-space-40) !important;
+        margin-bottom: var(--lp-space-16) !important;
+    }
+    [data-testid="stMainBlockContainer"] .lp-subtitle {
+        margin-bottom: 32px !important;
+        line-height: 1.6;
+    }
+    [data-testid="stForm"] [data-testid="stFormSubmitButton"] {
+        margin-top: var(--lp-space-8) !important;
+    }
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"],
+    [data-testid*="Chart"] {
+        margin-top: var(--lp-space-16) !important;
+        margin-bottom: 32px !important;
+    }
+    [data-testid="stTabs"] [role="tablist"] {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: var(--lp-space-8) !important;
+    }
+    [data-testid="stTabs"] button[role="tab"] {
+        min-height: 44px !important;
+        padding: 12px 16px !important;
+        border: 0 !important;
+        border-bottom: 3px solid transparent !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        color: #53636a !important;
+    }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        border-bottom-color: var(--lp-teal) !important;
+        background: transparent !important;
+        color: #11776f !important;
+    }
+    [data-testid="stTabs"] [data-testid="stTabContent"] {
+        padding-top: var(--lp-space-24) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] {
+        margin: 0 0 6px !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stPageLink"] a {
+        display: flex !important;
+        align-items: center !important;
+        min-height: 44px !important;
+        padding: 8px 12px !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-bottom-area {
+        margin-top: var(--lp-space-24) !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-bottom-area [data-testid="stExpander"] {
+        margin-bottom: var(--lp-space-24) !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-signed-in-card {
+        margin-top: var(--lp-space-24) !important;
+        padding: 12px 16px !important;
+        border: 1px solid var(--lp-line);
+        border-radius: 12px;
+        background: #f7faf9;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area {
+        margin-top: var(--lp-space-8) !important;
+    }
     @media (max-width: 760px) {
         [data-testid="stMainBlockContainer"] {
-            padding: 1.25rem 1rem 2rem !important;
+            padding: var(--lp-space-24) var(--lp-space-16) 32px !important;
         }
         .lp-sidebar-brand { margin-bottom: .5rem; }
         .lp-sidebar-bank-name { font-size: .98rem; }
@@ -985,6 +1072,7 @@ def render_active_navigation_style(url_path: str) -> None:
 
 def render_login_styles() -> None:
     """Apply the focused, responsive LoanPilot sign-in theme."""
+    render_disclaimer()
     st.markdown(
         """
         <style>

@@ -236,7 +236,7 @@ def _render_recommendation(result: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
 
-        left, right = st.columns(2)
+        left, right = st.columns(2, gap="large")
         with left:
             st.markdown("**Reasons for**")
             reasons_for = result.get("reasons_for", [])
@@ -487,7 +487,9 @@ def render(store: SQLiteStore | None = None) -> None:
     applications_by_id = applications.set_index("application_id")
     selected = st.session_state.get("selected_application")
     default_index = application_ids.index(selected) if selected in application_ids else 0
-    header_left, header_run, header_mode = st.columns([4.5, 1.4, 1.3])
+    header_left, header_run, header_mode = st.columns(
+        [4.5, 1.4, 1.3], gap="large"
+    )
     with header_left:
         selected_application = st.selectbox(
             "Choose applicant",

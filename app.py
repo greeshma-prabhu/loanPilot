@@ -20,16 +20,6 @@ from loanpilot.theme import render_active_navigation_style, render_sidebar_brand
 
 LOGIN_PAGE = st.Page(login.render, title="Sign in", url_path="login")
 SIGNED_OUT_COOKIE_NAME = "loanpilot_signed_out"
-ABOUT_SECTIONS = (
-    ("about", "About", ":material/info:"),
-    ("faq", "FAQ", ":material/help:"),
-    ("real_vs_simulated", "Real vs simulated", ":material/compare:"),
-    ("research_note", "Research Note", ":material/menu_book:"),
-    ("ai_usage_log", "AI Usage Log", ":material/psychology:"),
-    ("assumptions", "Assumptions", ":material/tune:"),
-    ("glossary", "Glossary", ":material/translate:"),
-    ("contact", "Contact", ":material/mail:"),
-)
 _SEEDED_DATABASE_PATHS: set[str] = set()
 _SEED_INITIALIZATION_LOCK = Lock()
 
@@ -137,12 +127,6 @@ def _sign_out(login_page) -> None:
     st.switch_page(login_page)
 
 
-def _navigate_to_about_section(page, section: str) -> None:
-    """Open the About page at the selected reference section."""
-    st.session_state["about_faq_section"] = section
-    st.switch_page(page)
-
-
 def main() -> None:
     """Gate all product navigation behind a session-level sign-in."""
     global LOGIN_PAGE
@@ -204,16 +188,12 @@ def main() -> None:
                     )
                     for key, label, icon in know_more:
                         st.page_link(know_more_pages[key], label=label, icon=icon)
-                with st.container(key="sidebar-reference-links"):
-                    for section, label, icon in ABOUT_SECTIONS:
-                        st.button(
-                            label,
-                            key=f"sidebar_about_{section}",
-                            icon=icon,
-                            on_click=_navigate_to_about_section,
-                            args=(know_more_pages["about_faq"], section),
-                            width="stretch",
-                        )
+                auth = st.session_state.get("auth", {})
+                with st.container(key="sidebar-signed-in-card"):
+                    st.caption("SIGNED IN AS")
+                    st.write(auth.get("name", "Analyst"))
+                    if auth.get("role"):
+                        st.caption(auth["role"])
                 with st.container(key="sidebar-sign-out-area"):
                     st.button(
                         "Sign out",

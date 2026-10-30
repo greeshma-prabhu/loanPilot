@@ -115,11 +115,39 @@ def test_authenticated_app_can_rerun_without_reusing_page_objects() -> None:
 
 
 def test_know_more_pages_are_registered_in_hidden_navigation() -> None:
-    """Dialog links target pages registered with Streamlit navigation."""
+    """The navigation contains exactly the requested operating and Know More pages."""
     from loanpilot.navigation import KNOW_MORE_PAGES, NAVIGATION
+    from loanpilot.navigation import OPERATE_PAGES
 
     registered_pages = {page for pages in NAVIGATION.values() for page in pages}
+    assert list(OPERATE_PAGES.values()) == NAVIGATION["Operate"]
+    assert list(KNOW_MORE_PAGES.values()) == NAVIGATION["Know more"]
     assert set(KNOW_MORE_PAGES.values()).issubset(registered_pages)
+    assert [page.title for page in NAVIGATION["Operate"]] == [
+        "Overview",
+        "Applications",
+        "New Application",
+        "AI Assessment",
+        "Human Review",
+        "Document Library",
+        "Guided Demo",
+    ]
+    assert [page.title for page in NAVIGATION["Know more"]] == [
+        "Approach Story",
+        "Technical Architecture",
+        "Data Explorer",
+        "About & FAQ",
+    ]
+    assert not {
+        "About",
+        "FAQ",
+        "Real vs simulated",
+        "Research Note",
+        "AI Usage Log",
+        "Assumptions",
+        "Glossary",
+        "Contact",
+    }.intersection(page.title for page in registered_pages)
 
 
 def test_document_library_follows_human_review_in_operate_navigation() -> None:

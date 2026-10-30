@@ -118,7 +118,7 @@ def render_document_verification_report(
             "INCONCLUSIVE": "The documents cannot be read or compared conclusively.",
         }.get(status, "The document comparison result is unavailable.")
         st.write(status_text)
-        amount_columns = st.columns(3)
+        amount_columns = st.columns(3, gap="large")
         with amount_columns[0]:
             st.metric(
                 "Salary Slip net salary",
@@ -304,7 +304,7 @@ def stage_tracker(current_stage: str) -> None:
     """Render ordered workflow steps with explicit done/current/upcoming text."""
     normalized = _STAGE_ALIASES.get(current_stage.casefold(), current_stage)
     current_index = STAGES.index(normalized) if normalized in STAGES else 0
-    columns = st.columns(len(STAGES))
+    columns = st.columns(len(STAGES), gap="large")
     for index, (column, stage) in enumerate(zip(columns, STAGES, strict=True)):
         if index < current_index:
             icon, state = "✓", "Done"
@@ -556,7 +556,7 @@ def render_key_numbers(application_id: str, store: Any = None) -> None:
         "employer_matches",
     )
     issues = sum(not bool(reconciliation.get(key)) for key in checks)
-    columns = st.columns(4)
+    columns = st.columns(4, gap="large")
     facts = (
         ("Income", f"{fmt_inr(stated)} → {fmt_inr(verified)}"),
         (

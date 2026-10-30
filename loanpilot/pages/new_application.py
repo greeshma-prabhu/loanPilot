@@ -1011,7 +1011,7 @@ def _render_applicant(data: dict, customers: list[dict]) -> None:
         )
         return
     st.text_input("Full name *", value=data["name"], key="intake_widget_name")
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="large")
     left.date_input(
         "Date of birth *",
         value=date.fromisoformat(data["dob"]),
@@ -1092,7 +1092,7 @@ def _render_employment(data: dict) -> None:
         )
         return
     st.text_input("Employer *", value=data["employer"], key="intake_widget_employer")
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="large")
     left.selectbox(
         "Employment type *", _EMPLOYMENT_TYPES,
         index=_EMPLOYMENT_TYPES.index(data["employment_type"]),
@@ -1118,7 +1118,7 @@ def _render_employment(data: dict) -> None:
 
 def _render_loan(data: dict) -> None:
     """Render loan request fields and live indicative EMI."""
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="large")
     left.number_input(
         "Requested amount (Rs) *", min_value=1000.0,
         value=float(data["amount"]), step=5000.0, key="intake_widget_amount",
@@ -1172,7 +1172,7 @@ def _render_document_step(data: dict) -> None:
     elif current_mode == "Upload my own PDFs":
         current_mode = _DOCUMENT_MODES[1]
     st.session_state.setdefault("intake_widget_document_mode", current_mode)
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="large")
     with left:
         with st.container(border=True):
             st.markdown("#### Use synthetic demo documents")
@@ -1238,7 +1238,7 @@ def _render_document_step(data: dict) -> None:
             )
         st.info("Generated files are watermarked SYNTHETIC / DEMO ONLY and are not real evidence.")
         demo_texts = _document_texts(data)
-        download_columns = st.columns(2)
+        download_columns = st.columns(2, gap="large")
         for index, doc_type in enumerate(_DEMO_DOCUMENT_TYPES):
             pdf_bytes = _pdf_bytes(
                 _DOC_LABELS[doc_type], demo_texts[doc_type].splitlines()
@@ -1260,7 +1260,7 @@ def _render_document_step(data: dict) -> None:
             "Optional PDFs · maximum 10 MB each. Documents are saved with this "
             "application; matching and mismatch detection happen in AI Assessment."
         )
-        salary_col, statement_col = st.columns(2)
+        salary_col, statement_col = st.columns(2, gap="large")
         with salary_col:
             st.file_uploader(
                 "Salary Slip",
@@ -1376,7 +1376,7 @@ def render(store: SQLiteStore | None = None) -> None:
 
     candidate = _step_data(step_kind)
     validation = _validate(candidate, step_kind)
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="large")
     with left:
         st.button(
             "Back",

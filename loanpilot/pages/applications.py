@@ -208,7 +208,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
             for value in all_rows["ai_recommendation"].dropna().unique().tolist()
         ),
     ]
-    filter_columns = st.columns([1.2, 1.2, 1.4, 2])
+    filter_columns = st.columns([1.2, 1.2, 1.4, 2], gap="large")
     with filter_columns[0]:
         stage = st.selectbox("Stage", stage_options, key="applications_stage")
     with filter_columns[1]:
@@ -246,7 +246,7 @@ def _render_applications_list(store: SQLiteStore) -> None:
     page_index = min(int(st.session_state.get("applications_page", 0)), page_count - 1)
     st.session_state["applications_page"] = page_index
     if page_count > 1:
-        page_controls = st.columns([1, 3, 1])
+        page_controls = st.columns([1, 3, 1], gap="large")
         with page_controls[0]:
             st.button(
                 "Previous",
@@ -595,7 +595,7 @@ def _render_kyc_panel(application_id: str, store: SQLiteStore) -> None:
 def _render_summary(application: pd.Series, documents: pd.DataFrame) -> None:
     """Render applicant profile, request, indicative EMI, and persona story."""
     st.subheader("Applicant profile")
-    columns = st.columns(4)
+    columns = st.columns(4, gap="large")
     fields = [
         ("Age", f"{application['age']} years"),
         ("City", application["city"]),
@@ -613,7 +613,7 @@ def _render_summary(application: pd.Series, documents: pd.DataFrame) -> None:
 
     st.subheader("Loan request")
     rate = _rate_for_score(application["bureau_score"])
-    request_columns = st.columns(4)
+    request_columns = st.columns(4, gap="large")
     request_columns[0].metric("Requested amount", fmt_inr(application["requested_amount"]))
     request_columns[1].metric("Tenure", f"{application['tenure_months']} months")
     request_columns[2].metric("Purpose", application["purpose"])
@@ -691,7 +691,7 @@ def _render_financials(
     real_badge = implementation_badge("real")
 
     st.caption(f"{real_badge} Computed from the synthetic records available in this demo.", unsafe_allow_html=True)
-    columns = st.columns(4)
+    columns = st.columns(4, gap="large")
     metrics = [
         ("Payslip net income", fmt_inr(payslip_net), "Net income stated on the payslip."),
         ("Average salary credit · 6 months", fmt_inr(salary_avg), "Mean of the six monthly salary-credit aggregates."),
@@ -887,7 +887,7 @@ def _render_sanction(application_id: str, store: SQLiteStore) -> None:
     kfs = json.loads(sanction["kfs_json"])
     st.markdown(f"### Key Fact Statement preview {simulated_badge}", unsafe_allow_html=True)
     st.warning(kfs["label"])
-    kfs_columns = st.columns(4)
+    kfs_columns = st.columns(4, gap="large")
     for column, (label, value) in zip(
         kfs_columns,
         (
@@ -998,7 +998,7 @@ def _render_case(application_id: str, store: SQLiteStore) -> None:
             f"{escape(str(application.get('human_reason') or 'No written reason recorded.'))}",
             unsafe_allow_html=True,
         )
-    back_column, assessment_column = st.columns([1, 1])
+    back_column, assessment_column = st.columns([1, 1], gap="large")
     with back_column:
         st.button(
             "Back to applications",

@@ -139,7 +139,7 @@ def _render_portfolio_analytics(store: SQLiteStore) -> None:
         .reset_index()
     )
     with st.container(key="overview_portfolio_layout"):
-        trend_column, distribution_column = st.columns([1.55, 1])
+        trend_column, distribution_column = st.columns([1.55, 1], gap="large")
         with trend_column:
             st.markdown("#### Monthly volume")
             if dated.empty:
@@ -323,7 +323,7 @@ def _render_notification_panel(store: SQLiteStore) -> None:
             unsafe_allow_html=True,
         )
         with st.container(key="overview_notification_panel"):
-            heading, close = st.columns([5, 1])
+            heading, close = st.columns([5, 1], gap="large")
             with heading:
                 st.markdown("#### Document updates")
             with close:
@@ -419,7 +419,7 @@ def _render_kpis(records: pd.DataFrame) -> None:
         ("Rejected Applications", int(counts.get("Rejected", 0))),
     )
     with st.container(key="overview_kpis"):
-        columns = st.columns(4)
+        columns = st.columns(4, gap="large")
         for column, (label, value) in zip(columns, metrics, strict=True):
             column.metric(label, f"{value:,}")
 
@@ -457,7 +457,7 @@ def _render_attention(store: SQLiteStore) -> None:
             else None
         )
         with st.container(border=True):
-            details, action = st.columns([5, 1.2])
+            details, action = st.columns([5, 1.2], gap="large")
             with details:
                 applicant = _display_text(
                     case.get("applicant"),
@@ -535,7 +535,7 @@ def _render_recent_applications(records: pd.DataFrame) -> None:
         attention = _display_text(application.get("attention_reason"))
         label = risk or ("Needs attention" if attention else "No attention flag")
         with st.container(border=True):
-            details, action = st.columns([5, 1])
+            details, action = st.columns([5, 1], gap="large")
             with details:
                 applicant = _display_text(
                     application.get("applicant"),
@@ -578,7 +578,7 @@ def render(store: SQLiteStore | None = None) -> None:
         '<div class="lp-eyebrow">OPERATE  /  COMMAND CENTRE</div>',
         unsafe_allow_html=True,
     )
-    title_column, notification_column = st.columns([8, 1])
+    title_column, notification_column = st.columns([8, 1], gap="large")
     with title_column:
         st.title(title)
     with notification_column:

@@ -24,6 +24,8 @@ PAGES = (approach_story, technical_architecture, data_explorer, about_faq)
 
 def _render(page, docs_path=None, store=None) -> AppTest:
     """Create an isolated page-render test with optional project documentation."""
+    project_root = config.PROJECT_ROOT
+    configured_docs_dir = config.DOCS_DIR
     prelude = (
         "from pathlib import Path\n"
         f"from {page.__name__} import render\n"
@@ -32,6 +34,7 @@ def _render(page, docs_path=None, store=None) -> AppTest:
         prelude += (
             "from loanpilot import config\n"
             f"config.DOCS_DIR = Path({str(docs_path)!r})\n"
+            f"config.PROJECT_ROOT = Path({str(docs_path.parent)!r})\n"
         )
     if store is not None:
         prelude += (
@@ -40,7 +43,12 @@ def _render(page, docs_path=None, store=None) -> AppTest:
         )
     else:
         prelude += "render()\n"
-    return AppTest.from_string(prelude)
+    app = AppTest.from_string(prelude)
+    try:
+        return app.run()
+    finally:
+        config.PROJECT_ROOT = project_root
+        config.DOCS_DIR = configured_docs_dir
 
 
 @pytest.mark.parametrize("page", PAGES)
@@ -48,7 +56,7 @@ def test_explanatory_pages_render_without_optional_documents(page, tmp_path) -> 
     """Every Phase 7 page renders when the optional research note is absent."""
     docs = tmp_path / "docs"
     docs.mkdir()
-    app = _render(page, docs_path=docs).run()
+    app = _render(page, docs_path=docs)
     assert not app.exception, page.__name__
 
 
@@ -59,8 +67,14 @@ def test_research_and_usage_pages_render_when_docs_exist(page, tmp_path) -> None
     docs.mkdir()
     (docs / "research_note.md").write_text("# Research\nSynthetic evidence note.", encoding="utf-8")
     (docs / "ai_usage_log.md").write_text("# AI usage\nRecorded tools.", encoding="utf-8")
-    app = _render(page, docs_path=docs).run()
+    (docs / "assumptions.md").write_text("# Assumptions\nSynthetic records only.", encoding="utf-8")
+    app = _render(page, docs_path=docs)
     assert not app.exception
+    if page is about_faq:
+        rendered_text = "\n".join(str(element.value) for element in app.markdown)
+        assert "Synthetic evidence note." in rendered_text
+        assert "Recorded tools." in rendered_text
+        assert "Synthetic records only." in rendered_text
 
 
 @pytest.mark.parametrize(
@@ -79,20 +93,44 @@ def test_about_sections_render_supplied_reference_pdfs(
     docs = tmp_path / "docs"
     docs.mkdir()
     shutil.copyfile(config.PROJECT_ROOT / "docs" / pdf_name, docs / pdf_name)
+    project_root = config.PROJECT_ROOT
+    configured_docs_dir = config.DOCS_DIR
     app = AppTest.from_string(
         "import streamlit as st\n"
         "from pathlib import Path\n"
         "from loanpilot import config\n"
         f"config.DOCS_DIR = Path({str(docs)!r})\n"
-        f"st.session_state['about_faq_section'] = {section!r}\n"
+        f"config.PROJECT_ROOT = Path({str(docs.parent)!r})\n"
         "from loanpilot.pages.about_faq import render\n"
         "render()\n"
-    ).run()
+    )
+    try:
+        app.run()
+    finally:
+        config.PROJECT_ROOT = project_root
+        config.DOCS_DIR = configured_docs_dir
 
     assert not app.exception
     assert expected_text.casefold() in "\n".join(
         str(element.value) for element in app.markdown
     ).casefold()
+
+
+def test_about_faq_has_eight_ordered_tabs() -> None:
+    app = _render(about_faq)
+
+    assert not app.exception
+    assert [tab.label for tab in app.tabs] == [
+        "About",
+        "FAQ",
+        "Real vs simulated",
+        "Research note",
+        "AI usage log",
+        "Assumptions",
+        "Glossary",
+        "Contact",
+    ]
+    assert len(app.expander) == len(about_faq._FAQ)
 
 
 def test_data_explorer_only_runs_read_only_selects(tmp_path) -> None:

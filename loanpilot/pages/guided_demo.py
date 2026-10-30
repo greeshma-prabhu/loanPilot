@@ -137,7 +137,7 @@ def _restart_demo() -> None:
 def _render_journey(current_step: int | None) -> None:
     """Show the four stages and mark completed/current journey progress."""
     with st.container(key="guided-demo-journey"):
-        columns = st.columns(4)
+        columns = st.columns(4, gap="large")
         for index, (column, stage) in enumerate(zip(columns, STAGES)):
             if current_step is None:
                 kind, label = "neutral", f"{index + 1}. {stage}"
@@ -157,11 +157,11 @@ def _render_submission() -> None:
     st.caption("Application captured and validated before assessment.")
     with st.container(border=True):
         st.markdown(f"### {APPLICANT['name']}")
-        details = st.columns(3)
+        details = st.columns(3, gap="large")
         details[0].metric("Employment", APPLICANT["employment"])
         details[1].metric("Monthly net income", fmt_inr(APPLICANT["monthly_income"]))
         details[2].metric("Existing monthly EMI", fmt_inr(APPLICANT["existing_emi"]))
-        details = st.columns(3)
+        details = st.columns(3, gap="large")
         details[0].metric("Requested amount", fmt_inr(APPLICANT["requested_amount"]))
         details[1].metric("Tenure", f"{APPLICANT['tenure_months']} months")
         details[2].metric("Loan purpose", APPLICANT["purpose"])
@@ -207,7 +207,7 @@ def _render_assessment() -> None:
 
     results = _assessment_results()
     policy = results["policy"]
-    columns = st.columns(3)
+    columns = st.columns(3, gap="large")
     columns[0].metric("Proposed monthly EMI", fmt_inr(results["emi"]))
     columns[1].metric("FOIR", f"{results['foir']:.1%}")
     columns[2].metric("Illustrative policy rate", f"{results['rate']:.1%} p.a.")
@@ -334,7 +334,7 @@ def _render_decision() -> None:
         kind = "danger"
 
     st.markdown(status_chip(title, kind), unsafe_allow_html=True)
-    columns = st.columns(3)
+    columns = st.columns(3, gap="large")
     columns[0].metric("Requested amount", fmt_inr(APPLICANT["requested_amount"]))
     columns[1].metric(
         "Illustrative approved amount",
@@ -428,7 +428,7 @@ def render() -> None:
     )
     override_invalid = current_step == 2 and not _reviewer_override_is_valid()
     with st.container(key="guided-demo-controls"):
-        controls = st.columns(3)
+        controls = st.columns(3, gap="large")
         controls[0].button(
             "Previous Step",
             key="guided_demo_previous",

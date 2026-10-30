@@ -73,7 +73,7 @@ def test_demo_progression_allows_nonrecommended_action_without_reason() -> None:
         "Choose an action",
         *(action.label for action in guided_demo.HUMAN_ACTIONS.values()),
     ]
-    app.selectbox(key="guided_demo_action").select("refer_up").run()
+    app.selectbox(key="guided_demo_action").select("Refer up").run()
     assert app.button(key="guided_demo_next").disabled is False
     app.button(key="guided_demo_next").click().run()
     assert app.session_state["guided_demo_step"] == 3

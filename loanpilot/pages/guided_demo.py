@@ -13,7 +13,11 @@ from loanpilot.agent.policy_engine import (
 )
 from loanpilot.agent.sanction import reducing_balance_emi
 from loanpilot.components import calculate_foir, fmt_inr, status_chip
-from loanpilot.decisions import HUMAN_ACTIONS, evaluate_human_action
+from loanpilot.decisions import (
+    HUMAN_ACTIONS,
+    action_code_for_label,
+    evaluate_human_action,
+)
 from loanpilot.theme import render_disclaimer, render_header
 
 ASSESSMENT_WAIT_SECONDS = 5
@@ -278,14 +282,20 @@ def _render_human_review() -> None:
         "of the AI recommendation."
     )
     st.caption(f"Suggested for this story: {suggested_action}")
-    action_code = st.selectbox(
+    if st.session_state.get("guided_demo_action") in HUMAN_ACTIONS:
+        old_action_code = st.session_state["guided_demo_action"]
+        st.session_state["guided_demo_action"] = HUMAN_ACTIONS[old_action_code].label
+    action_label = st.selectbox(
         "Simulated reviewer action",
-        ["", *HUMAN_ACTIONS],
-        format_func=lambda code: (
-            "Choose an action" if not code else HUMAN_ACTIONS[code].label
-        ),
+        ["", *(action.label for action in HUMAN_ACTIONS.values())],
         index=0,
+        format_func=lambda value: value or "Choose an action",
         key="guided_demo_action",
+    )
+    action_code = (
+        action_code_for_label(action_label)
+        if action_label
+        else ""
     )
     action_assessment = (
         evaluate_human_action(recommendation, action_code) if action_code else None
@@ -310,19 +320,20 @@ def _render_human_review() -> None:
 
 def _reviewer_decision_is_valid() -> bool:
     """Require a selected human action; recording a reason is optional."""
-    action_code = st.session_state.get("guided_demo_action", "")
-    return action_code in HUMAN_ACTIONS
+    action_label = st.session_state.get("guided_demo_action", "")
+    return action_label in {action.label for action in HUMAN_ACTIONS.values()}
 
 
 def _render_decision() -> None:
     """Show the selected human outcome and explicitly non-binding next steps."""
     st.subheader("Final Decision")
     results = _assessment_results()
-    action_code = st.session_state.get("guided_demo_action", "")
+    action_label = st.session_state.get("guided_demo_action", "")
     reason = str(st.session_state.get("guided_demo_reviewer_rationale", "")).strip()
-    if action_code not in HUMAN_ACTIONS:
+    if action_label not in {action.label for action in HUMAN_ACTIONS.values()}:
         st.info("Choose an action to continue.")
         return
+    action_code = action_code_for_label(action_label)
     action = HUMAN_ACTIONS[action_code]
     action_assessment = evaluate_human_action(
         results["policy"]["recommendation"], action_code

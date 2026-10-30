@@ -27,7 +27,11 @@ from loanpilot.components import (
     render_why,
     status_chip,
 )
-from loanpilot.decisions import HUMAN_ACTIONS, evaluate_human_action
+from loanpilot.decisions import (
+    HUMAN_ACTIONS,
+    action_code_for_label,
+    evaluate_human_action,
+)
 from loanpilot.data.queries import (
     get_agent_trace,
     get_application,
@@ -247,7 +251,12 @@ def _submit_review_decision(
 ) -> None:
     """Read keyed widgets in the callback and persist the choice."""
     error_key = f"review_error_{application_id}"
-    action_code = str(st.session_state.get(f"review_action_{application_id}", ""))
+    action_label = str(st.session_state.get(f"review_action_{application_id}", ""))
+    try:
+        action_code = action_code_for_label(action_label)
+    except ValueError:
+        st.session_state[error_key] = "Select a valid review action."
+        return
     action_definition = HUMAN_ACTIONS.get(action_code)
     if action_definition is None:
         st.session_state[error_key] = "Select a valid review action."
@@ -321,16 +330,22 @@ def _render_decision_panel(
     amount = float(summary["application"]["requested_amount"])
     tenure = int(summary["application"]["tenure_months"])
     rate = pricing_rate(score)
+    if st.session_state.get(action_key) in HUMAN_ACTIONS:
+        old_action_code = st.session_state[action_key]
+        st.session_state[action_key] = HUMAN_ACTIONS[old_action_code].label
     fields = st.columns(2, gap="large")
     with fields[0]:
-        action_code = st.selectbox(
+        action_label = st.selectbox(
             "Action",
-            ["", *HUMAN_ACTIONS],
-            format_func=lambda code: (
-                "Choose an action" if not code else HUMAN_ACTIONS[code].label
-            ),
+            ["", *(action.label for action in HUMAN_ACTIONS.values())],
             index=0,
+            format_func=lambda value: value or "Choose an action",
             key=action_key,
+        )
+        action_code = (
+            action_code_for_label(action_label)
+            if action_label
+            else ""
         )
         action_definition = HUMAN_ACTIONS.get(action_code)
         assessment = (

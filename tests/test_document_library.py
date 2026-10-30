@@ -80,6 +80,24 @@ def test_upload_persists_metadata_pdf_and_extracted_text(tmp_path) -> None:
     assert len(list_library_documents(reopened_store)) == 1
 
 
+def test_identical_pdf_upload_returns_existing_record(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "duplicate-upload.db")
+    documents_dir = tmp_path / "library"
+    content = _pdf_bytes("One uploaded policy document.")
+
+    first = save_uploaded_pdf(
+        "policy.pdf", content, store, documents_dir=documents_dir
+    )
+    second = save_uploaded_pdf(
+        "policy-copy.pdf", content, store, documents_dir=documents_dir
+    )
+
+    assert second["document_id"] == first["document_id"]
+    assert len(list_library_documents(store, documents_dir=documents_dir)) == 1
+    assert len(list(documents_dir.glob("*.pdf"))) == 1
+    assert store.query("SELECT COUNT(*) AS count FROM raw_library_documents").iloc[0]["count"] == 1
+
+
 def test_upload_automatically_summarizes_once_and_keeps_each_update(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "summary.db"
     store = SQLiteStore(database_path)

@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import datetime, timezone
+import hashlib
 import logging
 import math
 from pathlib import Path
@@ -338,6 +339,33 @@ def _extract_pdf_text(path: Path) -> tuple[str, str]:
     return text, note
 
 
+def ensure_library_content_hashes(
+    store: SQLiteStore,
+    *,
+    documents_dir: Path = DOCUMENT_LIBRARY_DIR,
+) -> None:
+    """Backfill exact-content hashes for legacy library records when files exist."""
+    create_schema(store)
+    rows = store.query(
+        "SELECT document_id FROM raw_library_documents "
+        "WHERE content_sha256 IS NULL"
+    )
+    for row in rows.to_dict("records"):
+        document_id = str(row["document_id"])
+        if not _DOCUMENT_ID.fullmatch(document_id):
+            continue
+        path = _document_path(document_id, documents_dir)
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        store.execute(
+            "UPDATE raw_library_documents SET content_sha256 = ? "
+            "WHERE document_id = ? AND content_sha256 IS NULL",
+            (digest, document_id),
+        )
+
+
 def save_uploaded_pdf(
     filename: str,
     content: bytes | bytearray | memoryview,
@@ -361,6 +389,19 @@ def save_uploaded_pdf(
         raise DocumentLibraryError("The selected file is not a valid PDF.")
 
     create_schema(store)
+    content_sha256 = hashlib.sha256(content_bytes).hexdigest()
+    ensure_library_content_hashes(store, documents_dir=documents_dir)
+    existing = store.query(
+        "SELECT document_id FROM raw_library_documents "
+        "WHERE content_sha256 = ? ORDER BY uploaded_at, document_id LIMIT 1",
+        (content_sha256,),
+    )
+    if not existing.empty:
+        document = get_library_document(str(existing.iloc[0]["document_id"]), store)
+        if document is None:
+            raise DocumentLibraryError("The matching uploaded PDF could not be found.")
+        return document
+
     document_id = uuid4().hex
     path = _document_path(document_id, documents_dir)
     try:
@@ -374,26 +415,44 @@ def save_uploaded_pdf(
         extracted_text, processing_error = _extract_pdf_text(path)
         processing_status = "Processed" if extracted_text else "Failed"
         uploaded_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
-        store.execute(
-            """
-            INSERT INTO raw_library_documents (
-                document_id, original_filename, uploaded_at, mime_type,
-                size_bytes, processing_status, extracted_text, processing_error,
-                summary_status, summary_method, summary_headline, summary_text,
-                summary_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Not requested', '', '', '', '')
-            """,
-            (
-                document_id,
-                safe_name,
-                uploaded_at,
-                "application/pdf",
-                content_size,
-                processing_status,
-                extracted_text,
-                processing_error,
-            ),
-        )
+        duplicate_id = None
+        with store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            duplicate = connection.execute(
+                "SELECT document_id FROM raw_library_documents "
+                "WHERE content_sha256 = ? ORDER BY uploaded_at, document_id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+            if duplicate is not None:
+                duplicate_id = str(duplicate["document_id"])
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO raw_library_documents (
+                        document_id, original_filename, uploaded_at, mime_type,
+                        size_bytes, processing_status, extracted_text, processing_error,
+                        summary_status, summary_method, summary_headline, summary_text,
+                        summary_error, content_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Not requested', '', '', '', '', ?)
+                    """,
+                    (
+                        document_id,
+                        safe_name,
+                        uploaded_at,
+                        "application/pdf",
+                        content_size,
+                        processing_status,
+                        extracted_text,
+                        processing_error,
+                        content_sha256,
+                    ),
+                )
+        if duplicate_id is not None:
+            path.unlink(missing_ok=True)
+            document = get_library_document(duplicate_id, store)
+            if document is None:
+                raise DocumentLibraryError("The matching uploaded PDF could not be found.")
+            return document
     except (DocumentLibraryError, OSError, sqlite3.Error) as error:
         try:
             path.unlink(missing_ok=True)
@@ -411,20 +470,35 @@ def save_uploaded_pdf(
     return document
 
 
-def list_library_documents(store: SQLiteStore) -> list[dict[str, object]]:
+def list_library_documents(
+    store: SQLiteStore,
+    *,
+    documents_dir: Path = DOCUMENT_LIBRARY_DIR,
+) -> list[dict[str, object]]:
     """List document metadata without loading extracted text."""
     create_schema(store)
+    ensure_library_content_hashes(store, documents_dir=documents_dir)
     rows = store.query(
         """
         SELECT document_id, original_filename, uploaded_at, mime_type,
                size_bytes, processing_status, processing_error, summary_status,
                summary_method, summary_headline, summary_text, summary_error,
-               summary_version
+               summary_version, content_sha256
         FROM raw_library_documents
         ORDER BY uploaded_at DESC, document_id
         """
     )
-    return rows.to_dict("records")
+    documents = rows.to_dict("records")
+    unique_documents = []
+    seen_content = set()
+    for document in documents:
+        content_hash = document.get("content_sha256")
+        key = str(content_hash) if content_hash else str(document["document_id"])
+        if key in seen_content:
+            continue
+        seen_content.add(key)
+        unique_documents.append(document)
+    return unique_documents
 
 
 def get_library_document(

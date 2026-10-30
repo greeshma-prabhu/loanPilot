@@ -43,6 +43,7 @@ def test_assessment_displays_the_user_created_case_and_decision(assessed_store) 
     assert not app.exception
     content = "\n".join(element.value for element in app.markdown)
     assert app.selectbox(key="assessment_application_selector").value == _APPLICATION_ID
+    assert app.selectbox(key="assessment_application_selector").label == "Choose applicant"
     assert (
         get_application(_APPLICATION_ID, assessed_store).iloc[0]["name"]
         == "Assessment Applicant"
@@ -51,7 +52,14 @@ def test_assessment_displays_the_user_created_case_and_decision(assessed_store) 
     assert "Priya Menon" not in content
     assert "Karthik Nair" not in content
     assert any(item.label == "Run assessment" for item in app.button)
-    assert any(item.label == "Details" for item in app.expander)
+    assert any(item.label == "Assessment details" for item in app.expander)
+    assert not any(
+        "Technical case reference" in item.label for item in app.expander
+    )
+    assert not any(
+        label in {item.label for item in app.expander}
+        for label in ("Show raw inputs", "Show raw outputs", "Raw trace")
+    )
     assert len(list_applications({"user_created_only": True}, assessed_store)) == 1
 
 

@@ -81,6 +81,36 @@ def test_upload_prepares_summary_and_creates_one_persistent_notification(
     assert unread_document_notification_count(store) == 1
 
 
+def test_identical_pdf_upload_creates_one_library_record_and_notification(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "duplicate-notification.db")
+    monkeypatch.setattr(
+        "loanpilot.data.document_library.generate_json_with_gemini",
+        lambda _prompt: {
+            "headline": "Income evidence review",
+            "summary": "The PDF describes income evidence review requirements.",
+        },
+    )
+    content = _pdf_bytes()
+    documents_dir = tmp_path / "library"
+
+    first = upload_and_notify_pdf(
+        "income-guide.pdf", content, store, documents_dir=documents_dir
+    )
+    second = upload_and_notify_pdf(
+        "income-guide.pdf", content, store, documents_dir=documents_dir
+    )
+
+    assert second["document_id"] == first["document_id"]
+    assert len(list_document_notifications(store)) == 1
+    assert unread_document_notification_count(store) == 1
+    assert store.query(
+        "SELECT COUNT(*) AS count FROM raw_library_documents"
+    ).iloc[0]["count"] == 1
+
+
 def test_document_notifications_are_unique_and_persist_read_state(tmp_path) -> None:
     database_path = tmp_path / "notifications.db"
     store = SQLiteStore(database_path)

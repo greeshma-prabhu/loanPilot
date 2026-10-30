@@ -811,7 +811,12 @@ def _render_decision(application_id: str, application: pd.Series, store: SQLiteS
             unsafe_allow_html=True,
         )
     st.write(f"Decision: **{human_decision or 'Pending'}**")
-    st.write(f"Reviewer: {application.get('decided_by') or '—'}")
+    if str(human_decision or "").casefold().startswith("approve") or str(
+        human_decision or ""
+    ).casefold() == "modify terms":
+        st.write("**Approved by Demo Analyst**")
+    else:
+        st.write(f"Reviewer: {application.get('decided_by') or '—'}")
     st.write(f"Decided at: {format_datetime(application.get('decided_at'))}")
     st.write(f"Override: **{'Yes' if application.get('is_override') else 'No'}**")
     if human_decision:

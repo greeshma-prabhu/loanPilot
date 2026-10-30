@@ -401,6 +401,8 @@ def test_assessment_extracts_persists_and_reuses_uploaded_salary_documents(
     assert report["salary_statement_verification"]["difference"] == 25000
     assert len(get_document_verifications(application_id, store)) == 2
     assert assessment["reconciliation"]["salary_statement_status"] == "MISMATCH"
+    assert assessment["finances"]["stated_income"] == 65000
+    assert assessment["finances"]["verified_income"] == 40000
     clause = next(
         row for row in assessment["policy"]["clauses"] if row["clause_id"] == "CP-6.2"
     )

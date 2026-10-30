@@ -106,7 +106,7 @@ def _initial_intake() -> dict:
             "reason": None,
             "document_references": [],
         },
-        "identity_mode": "Use demo identity",
+        "identity_mode": "Upload documents",
         "identity_documents": {},
         "identity_sheet": None,
         "document_mode": _DOCUMENT_MODES[0],
@@ -561,6 +561,14 @@ def _use_demo_identity() -> None:
         "cersai": "not applicable (unsecured)",
     }
     st.session_state["intake"] = data
+
+
+def _identity_mode_changed() -> None:
+    """Keep the identity choice and generate demo evidence as soon as selected."""
+    mode = st.session_state["intake_widget_identity_mode"]
+    st.session_state["intake"] = {**_intake(), "identity_mode": mode}
+    if mode == "Use demo identity":
+        _use_demo_identity()
 
 
 def _pdf_bytes(title: str, lines: list[str]) -> bytes:
@@ -1034,10 +1042,9 @@ def _render_identity(data: dict) -> None:
     st.radio(
         "Identity method",
         ("Upload documents", "Use demo identity"),
-        index=0 if data["identity_mode"] == "Upload documents" else 1,
+        index=0 if data["identity_mode"] != "Use demo identity" else 1,
         key="intake_widget_identity_mode",
-        on_change=_sync_intake_widget,
-        args=("identity_mode", "intake_widget_identity_mode"),
+        on_change=_identity_mode_changed,
     )
     mode = st.session_state["intake_widget_identity_mode"]
     if mode == "Upload documents":
@@ -1053,11 +1060,9 @@ def _render_identity(data: dict) -> None:
             on_click=_verify_identity_documents,
         )
     else:
-        st.caption("Creates a watermarked synthetic identity sheet from this applicant's name and fake PAN.")
-        st.button(
-            "Generate demo identity",
-            key="intake_generate_identity",
-            on_click=_use_demo_identity,
+        st.caption(
+            "A watermarked synthetic identity sheet is generated automatically "
+            "when you select this option."
         )
     kyc = data["kyc"]
     if kyc.get("status") == "verified":

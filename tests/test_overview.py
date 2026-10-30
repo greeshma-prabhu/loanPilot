@@ -302,7 +302,9 @@ def test_overview_notification_panel_expands_summary_and_marks_read(tmp_path) ->
     assert not app.exception
     assert unread_document_notification_count(store) == 2
     bell_styles = "\n".join(str(element.value) for element in app.markdown)
-    assert "color: #dc2626" in bell_styles
+    assert "color: #ff6b6b" in bell_styles
+    assert "background: #ffffff" in bell_styles
+    assert "-webkit-text-fill-color: #b91c1c" in bell_styles
     app.button(key="overview_notification_toggle").click().run()
     assert app.session_state["overview_notifications_open"] is True
     assert app.button(key="overview_notifications_close")

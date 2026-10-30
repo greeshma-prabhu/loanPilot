@@ -93,8 +93,13 @@ def test_custom_applicant_submits_and_lands_on_assessment(
     assert app.session_state["intake_step"] == 1
     assert any("Use fake or sample documents only" in item.value for item in app.warning)
     assert not any("could not read documents" in item.value for item in app.info)
-    app.button(key="intake_generate_identity").click().run()
+    app.radio(key="intake_widget_identity_mode").set_value("Use demo identity").run()
     assert app.session_state["intake"]["kyc"]["status"] == "verified"
+    assert app.session_state["intake"]["identity_sheet"]["name"] == "identity_sheet.pdf"
+    assert not any(
+        button.key == "intake_generate_identity"
+        for button in app.button
+    )
     app.button(key="intake_next").click().run()
     app.text_input(key="intake_widget_employer").set_value("Demo Employer").run()
     app.button(key="intake_next").click().run()

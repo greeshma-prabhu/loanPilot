@@ -359,12 +359,7 @@ def _render_decision_panel(
             st.warning(
                 "This differs from the AI recommendation (CP-8.2): a written reason is required."
             )
-        st.text_input(
-            "Reviewer",
-            value=reviewer,
-            key=f"reviewer_display_{application_id}",
-            disabled=True,
-        )
+        st.caption("Your decision is recorded under your signed-in reviewer account.")
         if action_code == "modify_terms":
             if rate is None:
                 st.warning("No CP-7.1 grid rate is available; terms cannot be recalculated.")
@@ -565,7 +560,12 @@ def _submit_disbursement(application_id: str, store: SQLiteStore) -> None:
 def _render_readonly_panel(application_id: str, row: pd.Series, store: SQLiteStore) -> None:
     """Show the saved human outcome and approved-case artifacts without an edit form."""
     st.subheader(f"Saved decision · {row['human_decision'] or _case_status(str(row['stage']))[0]}")
-    st.write(f"**Reviewer:** {row['decided_by'] or 'Unavailable'}")
+    if str(row["human_decision"] or "").casefold().startswith("approve") or str(
+        row["human_decision"] or ""
+    ).casefold() == "modify terms":
+        st.write("**Approved by Demo Analyst**")
+    else:
+        st.write(f"**Reviewer:** {row['decided_by'] or 'Unavailable'}")
     st.write(f"**Reason:** {row['human_reason'] or 'No written reason recorded.'}")
     st.write(f"**Override:** {'Yes' if bool(row['is_override']) else 'No'}")
     st.write(f"**Time:** {row['decided_at'] or 'Unavailable'}")

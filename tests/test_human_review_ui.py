@@ -140,14 +140,20 @@ def test_review_filters_include_seeded_and_unassessed_operational_cases(
     assert new_id in set(pending["application_id"])
 
 
-def test_signed_in_user_is_the_read_only_reviewer(assessed_pair) -> None:
-    """The signed-in identity is displayed rather than chosen from demo names."""
+def test_decision_is_recorded_under_the_signed_in_user_without_reviewer_picker(
+    assessed_pair,
+) -> None:
+    """Reviewer identity is kept in the signed-in session, not a selectable field."""
     app = _app(assessed_pair).run()
     application_id = _FIRST_CASE
     app.button(key=f"review_open_{application_id}").click().run()
-    reviewer = app.text_input(key=f"reviewer_display_{application_id}")
-    assert reviewer.value == "Test Reviewer"
-    assert reviewer.disabled
+    assert not any(
+        element.key == f"reviewer_display_{application_id}"
+        for element in app.text_input
+    )
+    assert any(
+        "signed-in reviewer account" in element.value for element in app.caption
+    )
 
 
 def _fake_sanction(

@@ -226,6 +226,6 @@ def render(
         st.info(delete_notice)
     _render_upload(store, documents_dir)
     st.divider()
-    documents = list_library_documents(store)
+    documents = list_library_documents(store, documents_dir=documents_dir)
     _render_document_list(documents, store, documents_dir)
     _render_pdf_preview(store, documents, documents_dir)

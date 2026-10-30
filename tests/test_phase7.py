@@ -1,6 +1,7 @@
 """Explanatory-page and safe Data Explorer tests."""
 
 import json
+import shutil
 
 import pandas as pd
 import pytest
@@ -60,6 +61,38 @@ def test_research_and_usage_pages_render_when_docs_exist(page, tmp_path) -> None
     (docs / "ai_usage_log.md").write_text("# AI usage\nRecorded tools.", encoding="utf-8")
     app = _render(page, docs_path=docs).run()
     assert not app.exception
+
+
+@pytest.mark.parametrize(
+    ("section", "pdf_name", "expected_text"),
+    [
+        ("research_note", "research_note.pdf", "salary slips"),
+        ("ai_usage_log", "ai_usage_log.pdf", "Gemini"),
+    ],
+)
+def test_about_sections_render_supplied_reference_pdfs(
+    section: str,
+    pdf_name: str,
+    expected_text: str,
+    tmp_path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    shutil.copyfile(config.PROJECT_ROOT / "docs" / pdf_name, docs / pdf_name)
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from pathlib import Path\n"
+        "from loanpilot import config\n"
+        f"config.DOCS_DIR = Path({str(docs)!r})\n"
+        f"st.session_state['about_faq_section'] = {section!r}\n"
+        "from loanpilot.pages.about_faq import render\n"
+        "render()\n"
+    ).run()
+
+    assert not app.exception
+    assert expected_text.casefold() in "\n".join(
+        str(element.value) for element in app.markdown
+    ).casefold()
 
 
 def test_data_explorer_only_runs_read_only_selects(tmp_path) -> None:

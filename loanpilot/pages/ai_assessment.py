@@ -43,6 +43,15 @@ def _remember_selection() -> None:
         st.session_state["selected_application"] = application_id
 
 
+def _applicant_option(application: pd.Series) -> str:
+    """Make the case selector identifiable by applicant rather than internal ID."""
+    applicant = str(application.get("applicant") or "Applicant")
+    amount = fmt_inr(application.get("requested_amount"))
+    purpose = str(application.get("purpose") or "Loan application")
+    submitted = str(application.get("submitted_at") or "")[:10]
+    return f"{applicant} · {amount} · {purpose} · {submitted}"
+
+
 def _open_kyc_case(application_id: str) -> None:
     """Open the selected case with its KYC panel displayed."""
     from loanpilot.navigation import OPERATE_PAGES
@@ -146,24 +155,6 @@ def _render_pipeline(completed_steps: int) -> None:
     )
 
 
-def _render_timeline(result: dict[str, Any]) -> None:
-    """Show tool calls, inputs, outputs, durations, modes, and handoffs."""
-    st.subheader("Agent timeline")
-    for step in result.get("trace", []):
-        with st.expander(
-            f"{step['step_no']}. {step['agent']} · "
-            f"{step['duration_ms']} ms · {format_datetime(step['started_at'])}",
-            expanded=False,
-        ):
-            for call in step["calls"]:
-                st.markdown(f"**Tool: {call['name']}**")
-                with st.expander("Show raw inputs"):
-                    st.json(call.get("inputs", {}))
-                with st.expander("Show raw outputs"):
-                    st.json(call.get("outputs", {}))
-            st.caption(f"Mode: {step['mode']} · Handoff: {step['handoff']}")
-
-
 def _render_evidence(result: dict[str, Any]) -> None:
     """Show extracted fields beside their source document and supporting text."""
     st.subheader("Document evidence")
@@ -222,10 +213,6 @@ def _render_policy(result: dict[str, Any]) -> None:
         f"<th>Observed value</th><th>Result</th></tr></thead><tbody>{''.join(rows)}</tbody></table>",
         unsafe_allow_html=True,
     )
-    with st.expander("Show raw policy values"):
-        st.json([{"clause_id": row["clause_id"], "observed": row["observed"]} for row in clauses])
-
-
 def _human_value(value: Any) -> str:
     """Convert structured policy observations to a compact readable label."""
     if isinstance(value, dict):
@@ -336,9 +323,9 @@ def _render_recommendation(result: dict[str, Any]) -> None:
 
 
 def _render_details(result: dict[str, Any]) -> None:
-    """Render technical assessment detail in compact tabs."""
-    with st.expander("Details", expanded=False):
-        tabs = st.tabs(["Agent steps", "Document evidence", "Full policy table", "Raw trace"])
+    """Render readable assessment details without exposing raw tool payloads."""
+    with st.expander("Assessment details", expanded=False):
+        tabs = st.tabs(["Assessment steps", "Document evidence", "Policy checks"])
         with tabs[0]:
             st.markdown(
                 f"{implementation_badge('real')} Deterministic assessment steps",
@@ -356,15 +343,8 @@ def _render_details(result: dict[str, Any]) -> None:
                 width="stretch",
                 hide_index=True,
             )
-            for step in result.get("trace", []):
-                with st.expander(f"{step['step_no']}. {step['agent']} · tool calls"):
-                    for call in step["calls"]:
-                        with st.expander(str(call["name"])):
-                            st.markdown("**Inputs**")
-                            st.json(call.get("inputs", {}))
-                            st.markdown("**Outputs**")
-                            st.json(call.get("outputs", {}))
         with tabs[1]:
+            st.divider()
             mode = result.get("modes", ["Recorded"])[0]
             badge_kind = "real" if mode == "Live Gemini" else "simulated"
             st.markdown(
@@ -373,10 +353,8 @@ def _render_details(result: dict[str, Any]) -> None:
             )
             _render_evidence(result)
         with tabs[2]:
+            st.divider()
             _render_policy(result)
-        with tabs[3]:
-            with st.expander("Show raw trace JSON"):
-                st.json(result.get("trace", []))
 
 
 def _render_library_references(
@@ -418,9 +396,11 @@ def _render_assessment(result: dict[str, Any], store: SQLiteStore) -> None:
     st.caption("Policy outcomes and financial calculations are deterministic; language output cannot change them.")
     render_decision_card(application_id, store)
     render_human_review_button(application_id)
+    st.divider()
     with st.container(border=True):
         st.subheader("Policy rationale")
         render_why(application_id, store, compact=True)
+    st.divider()
     with st.container(border=True):
         st.subheader("Key numbers")
         render_key_numbers(application_id, store)
@@ -504,21 +484,22 @@ def render(store: SQLiteStore | None = None) -> None:
         return
 
     application_ids = applications["application_id"].tolist()
+    applications_by_id = applications.set_index("application_id")
     selected = st.session_state.get("selected_application")
     default_index = application_ids.index(selected) if selected in application_ids else 0
     header_left, header_run, header_mode = st.columns([4.5, 1.4, 1.3])
     with header_left:
         selected_application = st.selectbox(
-            "Case",
+            "Choose applicant",
             application_ids,
             index=default_index,
-            format_func=lambda application_id: (
-                f"{applications.loc[applications.application_id == application_id, 'applicant'].iloc[0]} "
-                f"· {application_id}"
+            format_func=lambda application_id: _applicant_option(
+                applications_by_id.loc[application_id]
             ),
             key="assessment_application_selector",
             on_change=_remember_selection,
         )
+        st.caption("Select the applicant whose application you want to assess.")
     with header_run:
         st.button(
             "Run assessment",
@@ -545,8 +526,6 @@ def render(store: SQLiteStore | None = None) -> None:
             f'<div style="padding-top:2rem">{status_chip(mode_label, "info")}</div>',
             unsafe_allow_html=True,
         )
-    with st.expander("Technical case reference"):
-        st.code(str(selected_application))
     if result is None:
         _render_pipeline(-1)
         render_decision_card(selected_application, store)

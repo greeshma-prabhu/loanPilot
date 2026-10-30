@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 from loanpilot import config
+from loanpilot.data.document_library import _extract_pdf_text
 from loanpilot.ledger import ledger_frame
 from loanpilot.theme import render_disclaimer, render_header
 
@@ -59,35 +60,39 @@ _GLOSSARY = [
 ]
 
 
-def _render_optional_markdown(path: Path, empty_message: str) -> None:
-    """Render a project-rooted optional Markdown file or a friendly placeholder."""
-    if path.is_file():
-        st.markdown(path.read_text(encoding="utf-8"))
+def _render_optional_reference(
+    markdown_path: Path,
+    pdf_path: Path,
+    empty_message: str,
+) -> None:
+    """Prefer editable Markdown and otherwise render the supplied PDF's text."""
+    if markdown_path.is_file():
+        st.markdown(markdown_path.read_text(encoding="utf-8"))
+    elif pdf_path.is_file():
+        text, note = _extract_pdf_text(pdf_path)
+        if text:
+            st.caption(
+                "Text extracted from the provided PDF; original page layout may differ."
+            )
+            st.markdown(text)
+            if note:
+                st.warning(note)
+        else:
+            st.warning(note or "The PDF did not contain readable text.")
     else:
         st.info(empty_message)
 
 
 def render() -> None:
-    """Render the complete reference page as audience-friendly tabs."""
+    """Render one selected reference section from the shared sidebar."""
     render_disclaimer()
     render_header(
         "About & FAQ",
         "What this demonstration can show, what it cannot claim, and where its assumptions come from.",
         "REFERENCE  /  PROJECT NOTES",
     )
-    tabs = st.tabs(
-        [
-            "About",
-            "FAQ",
-            "Real vs simulated",
-            "Research note",
-            "AI usage log",
-            "Assumptions",
-            "Glossary",
-            "Contact",
-        ]
-    )
-    with tabs[0]:
+    section = st.session_state.get("about_faq_section", "about")
+    if section == "about":
         st.subheader("Aarambh Bank · LoanPilot")
         st.info(
             "Demonstration with synthetic data. Not a real bank system or credit decision."
@@ -106,31 +111,33 @@ def render() -> None:
             "- AI recommendations go to Human Review; AI cannot sanction.\n"
             "- Disbursement records are simulated. No funds move."
         )
-    with tabs[1]:
+    elif section == "faq":
         st.subheader("Frequently asked questions")
         for question, answer in _FAQ:
             with st.expander(question):
                 st.write(answer)
-    with tabs[2]:
-        st.subheader("Implementation ledger")
+    elif section == "real_vs_simulated":
+        st.subheader("Real vs simulated")
         st.caption(
             "Component status is loaded from the project ledger. Conditional Gemini "
             "status is resolved from persisted live assessment traces."
         )
         st.dataframe(ledger_frame(), width="stretch", hide_index=True)
-    with tabs[3]:
+    elif section == "research_note":
         st.subheader("Research basis")
-        _render_optional_markdown(
+        _render_optional_reference(
             config.DOCS_DIR / "research_note.md",
+            config.DOCS_DIR / "research_note.pdf",
             "Research note to be added.",
         )
-    with tabs[4]:
+    elif section == "ai_usage_log":
         st.subheader("AI usage log")
-        _render_optional_markdown(
+        _render_optional_reference(
             config.DOCS_DIR / "ai_usage_log.md",
+            config.DOCS_DIR / "ai_usage_log.pdf",
             "AI usage log to be added.",
         )
-    with tabs[5]:
+    elif section == "assumptions":
         st.subheader("Assumptions")
         with config.ILLUSTRATIVE_METRICS_PATH.open(encoding="utf-8") as metrics_file:
             metrics = json.load(metrics_file)
@@ -154,16 +161,20 @@ def render() -> None:
             "identity verification, live bureau access, a secure customer channel, "
             "automated alerts or regulatory approval."
         )
-    with tabs[6]:
+    elif section == "glossary":
         st.subheader("Glossary")
         st.dataframe(
             [{"Term": term, "Plain-English meaning": meaning} for term, meaning in _GLOSSARY],
             width="stretch",
             hide_index=True,
         )
-    with tabs[7]:
+    elif section == "contact":
         st.subheader("Demo contact")
         st.info("Fictional demo contact — not a customer service channel.")
         st.write("Aarambh Bank · LoanPilot demonstration team")
         st.write("Email: loanpilot-demo@example.invalid")
         st.write("Telephone: +91 00000 00000")
+    else:
+        st.session_state["about_faq_section"] = "about"
+        st.subheader("Aarambh Bank · LoanPilot")
+        st.info("Demonstration with synthetic data. Not a real bank system or credit decision.")

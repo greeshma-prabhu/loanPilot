@@ -652,16 +652,43 @@ _CSS = """
     [data-testid="stSidebar"] .st-key-sidebar-layout {
         display: flex;
         flex-direction: column;
-        min-height: calc(100vh - 7rem);
+        min-height: calc(100dvh - 7rem);
     }
     [data-testid="stSidebarUserContent"] {
         padding-bottom: 1rem !important;
+        overflow-y: auto;
     }
     [data-testid="stSidebar"] .st-key-sidebar-nav {
         flex: 0 0 auto;
     }
-    [data-testid="stSidebar"] .st-key-sidebar-layout > div:has(.st-key-sidebar-sign-out-area) {
+    [data-testid="stSidebar"] .st-key-sidebar-nav [data-testid="stPageLink"] {
+        margin-bottom: .35rem;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-reference-links [data-testid="stVerticalBlock"] {
+        gap: .35rem !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-reference-links button {
+        min-height: 2.55rem;
+        justify-content: flex-start;
+        border-radius: 10px;
+        text-align: left;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-reference-links button:hover {
+        background: #f3f8f8 !important;
+        border-color: #b7d8d3 !important;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-layout > div:has(.st-key-sidebar-bottom-area) {
         margin-top: auto;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-bottom-area [data-testid="stExpander"] {
+        margin-bottom: .65rem;
+        border-color: #c9e2df;
+        border-radius: 10px;
+        background: #ffffff;
+    }
+    [data-testid="stSidebar"] .st-key-sidebar-bottom-area [data-testid="stExpander"] summary {
+        color: #173b39;
+        font-weight: 650;
     }
     [data-testid="stSidebar"] .st-key-sidebar-sign-out-area {
         padding: .65rem;
@@ -669,16 +696,6 @@ _CSS = """
         border-radius: 14px;
         background: #e9f4f3;
         box-shadow: 0 5px 16px rgba(20, 59, 60, .08);
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] {
-        margin-bottom: .5rem;
-        border-color: #c9e2df;
-        border-radius: 10px;
-        background: #ffffff;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] summary {
-        color: #173b39;
-        font-weight: 650;
     }
     [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button {
         width: 100%;
@@ -753,9 +770,6 @@ _CSS = """
     [data-testid="stSidebar"] {
         background: #ffffff;
         border-right: 1px solid var(--lp-line);
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-layout {
-        min-height: calc(100dvh - 5.5rem);
     }
     [data-testid="stSidebar"] [data-testid="stPageLink"] a {
         min-height: 2.7rem;
@@ -844,39 +858,6 @@ _CSS = """
         gap: .35rem 1rem;
         color: #687b8b;
         font-size: .78rem;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area {
-        padding: .7rem 0 0;
-        border: 0;
-        border-top: 1px solid var(--lp-line);
-        border-radius: 0;
-        background: transparent;
-        box-shadow: none;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] {
-        margin-bottom: .65rem;
-        border-color: transparent;
-        background: transparent;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area [data-testid="stExpander"] summary {
-        border-radius: 10px;
-        color: #40576a;
-        font-weight: 620;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button {
-        min-height: 2.65rem;
-        border-radius: 10px;
-        background: #ffffff !important;
-        border: 1px solid #d5e0e5 !important;
-        box-shadow: none;
-        color: #30485d !important;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button * {
-        color: #30485d !important;
-    }
-    [data-testid="stSidebar"] .st-key-sidebar-sign-out-area button:hover {
-        background: #f3f8f8 !important;
-        border-color: #b7d8d3 !important;
     }
     [data-testid="stVerticalBlockBorderWrapper"] {
         border-color: var(--lp-line);

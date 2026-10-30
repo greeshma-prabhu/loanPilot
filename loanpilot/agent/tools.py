@@ -54,14 +54,19 @@ def _snippet(documents: list[dict[str, Any]], expression: str) -> dict[str, str]
 def _regex_fields(documents: list[dict[str, Any]]) -> dict[str, Any]:
     """Extract the requested structured fields with auditable regex fallbacks."""
     payslip = next(
-        (doc["text_content"] for doc in documents if doc["doc_type"] == "payslip"),
+        (
+            doc["text_content"]
+            for doc in documents
+            if doc.get("category", doc["doc_type"]) in {"payslip", "salary_slip"}
+        ),
         "",
     )
     statement = next(
         (
             doc["text_content"]
             for doc in documents
-            if doc["doc_type"] == "bank_statement_summary"
+            if doc.get("category", doc["doc_type"])
+            in {"bank_statement_summary", "bank_statement"}
         ),
         "",
     )
@@ -240,12 +245,34 @@ def extract_document_fields(
                         "source_document": verification.get("file_name", "Uploaded PDF"),
                         "snippet": snippet,
                     }
+    report = features.get("document_verification_report") or {}
+    salary_statement = report.get("salary_statement_verification") or {}
+    document_net = salary_statement.get("salary_slip_net_salary")
+    bank_average = salary_statement.get(
+        "bank_statement_average_monthly_salary_credit"
+    )
+    if salary_statement:
+        fields["net"] = (
+            float(document_net) if isinstance(document_net, (int, float)) else None
+        )
+        fields["salary_credits_avg"] = (
+            float(bank_average) if isinstance(bank_average, (int, float)) else None
+        )
+    salary_name = (salary_statement.get("name_comparison") or {}).get(
+        "salary_slip_name"
+    )
+    if salary_name:
+        fields["applicant_name_salary_slip"] = salary_name
+    bank_name = (salary_statement.get("name_comparison") or {}).get(
+        "bank_statement_name"
+    )
+    if bank_name:
+        fields["applicant_name_bank_statement"] = bank_name
     anomalies = (
         output.get("anomaly_description")
         if llm_valid and isinstance(output, dict)
         else None
     )
-    report = features.get("document_verification_report")
     if report:
         anomalies = str(report.get("explanation") or anomalies)
     if not anomalies:
@@ -353,11 +380,35 @@ def financial_assessment(
         for loan in features["loans"]
         if loan["status"] == "Active"
     )
-    stated_income = float(extracted["fields"].get("net") or customer["net_monthly_income"])
-    salary_values = [float(row["salary_credit"]) for row in features["transactions"]]
-    verified_income = (
-        sum(salary_values) / len(salary_values) if salary_values else 0.0
+    document_report = features.get("document_verification_report") or {}
+    salary_statement = document_report.get("salary_statement_verification") or {}
+    has_salary_documents = any(
+        str(document.get("category") or document.get("doc_type") or "")
+        in {"salary_slip", "payslip", "bank_statement", "bank_statement_summary"}
+        for document in features.get("documents", [])
     )
+    payslip_net = salary_statement.get("salary_slip_net_salary")
+    bank_average = salary_statement.get(
+        "bank_statement_average_monthly_salary_credit"
+    )
+    stated_income = float(
+        payslip_net
+        if isinstance(payslip_net, (int, float))
+        else customer["net_monthly_income"]
+        if has_salary_documents
+        else extracted["fields"].get("net") or customer["net_monthly_income"]
+    )
+    if has_salary_documents:
+        verified_income = (
+            float(bank_average) if isinstance(bank_average, (int, float)) else 0.0
+        )
+    else:
+        salary_values = [
+            float(row["salary_credit"]) for row in features["transactions"]
+        ]
+        verified_income = (
+            sum(salary_values) / len(salary_values) if salary_values else 0.0
+        )
     return {
         "stated_income": stated_income,
         "verified_income": verified_income,

@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS raw_library_documents (
     summary_version INTEGER NOT NULL DEFAULT 0,
     summary_headline TEXT NOT NULL DEFAULT '',
     summary_text TEXT NOT NULL DEFAULT '',
-    summary_error TEXT NOT NULL DEFAULT ''
+    summary_error TEXT NOT NULL DEFAULT '',
+    content_sha256 TEXT
 );
 CREATE TABLE IF NOT EXISTS raw_document_notifications (
     document_id TEXT PRIMARY KEY,
@@ -346,6 +347,7 @@ def create_schema(store: SQLiteStore) -> None:
             ("summary_headline", "TEXT NOT NULL DEFAULT ''"),
             ("summary_text", "TEXT NOT NULL DEFAULT ''"),
             ("summary_error", "TEXT NOT NULL DEFAULT ''"),
+            ("content_sha256", "TEXT"),
         ):
             if column not in document_columns:
                 connection.execute(

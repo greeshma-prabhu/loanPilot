@@ -5,6 +5,7 @@ from pathlib import Path
 
 from loanpilot.data.document_library import (
     DocumentNotFoundError,
+    ensure_library_content_hashes,
     get_library_document,
     is_document_summary_current,
     save_uploaded_pdf,
@@ -88,26 +89,35 @@ def create_document_notification(
 def list_document_notifications(store: SQLiteStore) -> list[dict[str, object]]:
     """Return saved document notifications newest first."""
     create_schema(store)
+    ensure_library_content_hashes(store)
     rows = store.query(
         """
         SELECT n.document_id, d.original_filename, n.headline, n.summary,
-               n.uploaded_at, n.read_at
+               n.uploaded_at, n.read_at, d.content_sha256
         FROM raw_document_notifications n
         JOIN raw_library_documents d ON d.document_id = n.document_id
         ORDER BY n.uploaded_at DESC, n.document_id DESC
         """
     )
-    return rows.to_dict("records")
+    notifications = rows.to_dict("records")
+    unique_notifications = []
+    seen_content = set()
+    for notification in notifications:
+        content_hash = notification.get("content_sha256")
+        key = str(content_hash) if content_hash else str(notification["document_id"])
+        if key in seen_content:
+            continue
+        seen_content.add(key)
+        unique_notifications.append(notification)
+    return unique_notifications
 
 
 def unread_document_notification_count(store: SQLiteStore) -> int:
     """Count persisted notifications that have not been opened."""
-    create_schema(store)
-    rows = store.query(
-        "SELECT COUNT(*) AS unread_count "
-        "FROM raw_document_notifications WHERE read_at IS NULL"
+    return sum(
+        notification.get("read_at") is None
+        for notification in list_document_notifications(store)
     )
-    return int(rows.iloc[0]["unread_count"])
 
 
 def mark_document_notification_read(

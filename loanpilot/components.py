@@ -112,6 +112,12 @@ def render_document_verification_report(
         }.get(status, "warning")
         st.subheader("Salary Slip vs Bank Statement Verification")
         st.markdown(status_chip(status, status_kind), unsafe_allow_html=True)
+        status_text = {
+            "MATCH": "Salary Slip and Bank Statement details match.",
+            "MISMATCH": "Salary Slip and Bank Statement details do not match.",
+            "INCONCLUSIVE": "The documents cannot be read or compared conclusively.",
+        }.get(status, "The document comparison result is unavailable.")
+        st.write(status_text)
         amount_columns = st.columns(3)
         with amount_columns[0]:
             st.metric(

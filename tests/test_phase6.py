@@ -196,24 +196,22 @@ def test_document_controls_keep_values_when_switching_modes(tmp_path) -> None:
     assert app.checkbox(key="intake_widget_consent").value is True
 
 
-def test_autofill_uses_synthetic_details_and_keeps_consent_unchecked(tmp_path) -> None:
-    """Autofill supplies a coherent example while leaving consent to the user."""
-    store = SQLiteStore(tmp_path / "intake-autofill.db")
+def test_new_application_uses_entered_details_without_autofill_demo_button(tmp_path) -> None:
+    """The intake keeps user-entered values and offers no unrelated demo autofill."""
+    store = SQLiteStore(tmp_path / "intake-entered-details.db")
     create_schema(store)
     app = _render_page("new_application", store).run()
     app.text_input(key="intake_widget_name").set_value("Old entry").run()
-    app.button(key="intake_autofill_demo").click().run()
 
     data = app.session_state["intake"]
     assert app.session_state["intake_step"] == 0
-    assert data["name"] == "Demo Applicant"
-    assert data["city"] == "Pune"
-    assert data["mobile"] == "9000000000"
-    assert data["employer"] == "Aarambh Demo Services"
-    assert data["income"] == 60000.0
     assert data["consent"] is False
     assert data["declaration"] is False
-    assert app.text_input(key="intake_widget_name").value == "Demo Applicant"
+    assert app.text_input(key="intake_widget_name").value == "Old entry"
+    assert not any(
+        button.key == "intake_autofill_demo"
+        for button in app.button
+    )
 
 
 def _create_policy_case(store: SQLiteStore, kyc: dict) -> str:

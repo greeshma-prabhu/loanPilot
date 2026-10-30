@@ -248,6 +248,93 @@ def get_document_verification_report(
     }
 
 
+def save_document_verification_results(
+    application_id: str,
+    documents: list[Mapping[str, Any]],
+    report: Mapping[str, Any],
+    store: SQLiteStore | None = None,
+) -> None:
+    """Idempotently persist assessment-time extraction and case comparison."""
+    database = _store(store)
+    now = datetime.now().isoformat(timespec="seconds")
+    with database.connection() as connection:
+        for document in documents:
+            doc_id = document.get("doc_id")
+            if not doc_id:
+                continue
+            connection.execute(
+                "UPDATE raw_documents SET text_content = ? "
+                "WHERE doc_id = ? AND application_id = ?",
+                (str(document.get("text_content") or ""), doc_id, application_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO raw_document_verifications
+                    (doc_id, application_id, extraction_status, extraction_method,
+                     extracted_fields_json, field_evidence_json, checks_json,
+                     ai_explanation, verification_status, explanation, authenticity_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    application_id = excluded.application_id,
+                    extraction_status = excluded.extraction_status,
+                    extraction_method = excluded.extraction_method,
+                    extracted_fields_json = excluded.extracted_fields_json,
+                    field_evidence_json = excluded.field_evidence_json,
+                    checks_json = excluded.checks_json,
+                    ai_explanation = excluded.ai_explanation,
+                    verification_status = excluded.verification_status,
+                    explanation = excluded.explanation,
+                    authenticity_status = excluded.authenticity_status
+                """,
+                (
+                    doc_id,
+                    application_id,
+                    str(document.get("extraction_status", "Unavailable")),
+                    str(document.get("extraction_method", "Unavailable")),
+                    json.dumps(
+                        document.get("extracted_fields", {}),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        document.get("field_evidence", {}),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        document.get("checks", []),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
+                    str(document.get("ai_explanation", "")),
+                    str(document.get("verification_status", "Unable to verify")),
+                    str(document.get("explanation", "")),
+                    str(
+                        document.get(
+                            "authenticity_status", "Not independently verified"
+                        )
+                    ),
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO raw_document_verification_reports
+                (application_id, overall_status, report_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(application_id) DO UPDATE SET
+                overall_status = excluded.overall_status,
+                report_json = excluded.report_json,
+                created_at = excluded.created_at
+            """,
+            (
+                application_id,
+                str(report.get("overall_status", "Incomplete")),
+                json.dumps(dict(report), sort_keys=True, ensure_ascii=False),
+                now,
+            ),
+        )
+
+
 def register_document(
     application_id: str,
     document: Mapping[str, Any],

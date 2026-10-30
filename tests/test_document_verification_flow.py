@@ -62,6 +62,40 @@ def _uploads(
     ]
 
 
+def _salary_bank_uploads(
+    *,
+    salary_name: str = "Priya Shah",
+    bank_name: str = "Priya Shah",
+    net: int = 50000,
+    credits: tuple[int, ...] = (50000, 50000),
+) -> list[dict]:
+    transaction_lines = "\n".join(
+        f"2026-{index + 3:02d}-01 NEFT SALARY credit Rs {amount:,.2f} CR"
+        for index, amount in enumerate(credits)
+    )
+    average = sum(credits) / len(credits) if credits else 0
+    return [
+        {
+            "file_name": "salary.pdf",
+            "category": "salary_slip",
+            "content": _pdf(
+                f"Employee name: {salary_name}\nEmployer: Aarambh Demo Services\n"
+                f"Net salary: Rs {net:,.2f}"
+            ),
+        },
+        {
+            "file_name": "statement.pdf",
+            "category": "bank_statement",
+            "content": _pdf(
+                f"Account holder: {bank_name}\n"
+                "Period: April 2026 to September 2026\n"
+                f"{transaction_lines}\n"
+                f"Average monthly salary credits: Rs {average:,.2f}"
+            ),
+        },
+    ]
+
+
 def _local_extraction(monkeypatch) -> None:
     """Keep these tests deterministic and exercise the no-key fallback."""
     from loanpilot.data import document_verification
@@ -177,10 +211,204 @@ def test_document_step_renders_both_modes_and_empty_upload_report(tmp_path) -> N
         )
     app.button(key="intake_select_upload_documents").click().run()
     assert not app.exception
-    assert app.button(key="intake_analyze_documents")
-    app.button(key="intake_analyze_documents").click().run()
-    assert not app.exception
-    assert any("Incomplete" in element.value for element in app.markdown)
+    uploaders = {element.key for element in app.get("file_uploader")}
+    assert "intake_salary_slip_pdf" in uploaders
+    assert "intake_bank_statement_pdf" in uploaders
+    assert not any(
+        getattr(element, "key", None) == "intake_analyze_documents"
+        for element in app.button
+    )
+    assert not any("Identity proof" in element.value for element in app.info)
+
+
+def test_intake_persists_salary_documents_with_fixed_categories(
+    tmp_path, monkeypatch
+) -> None:
+    from loanpilot import config
+    from loanpilot.pages.new_application import _DOCUMENT_MODES, _save_documents
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", tmp_path / "documents")
+    uploads = _salary_bank_uploads()
+    documents = _save_documents(
+        "APP-DOC-CATEGORY-TEST",
+        {"document_mode": _DOCUMENT_MODES[1], "uploads": uploads},
+    )
+
+    assert [document["category"] for document in documents] == [
+        "salary_slip",
+        "bank_statement",
+    ]
+    assert [document["doc_type"] for document in documents] == [
+        "salary_slip",
+        "bank_statement",
+    ]
+    for upload, document in zip(uploads, documents):
+        stored = tmp_path / document["file_path"]
+        assert stored.read_bytes() == upload["content"]
+        assert document["text_content"] == ""
+
+
+@pytest.mark.parametrize(
+    ("salary_name", "bank_name", "net", "credits", "expected", "difference"),
+    [
+        ("Priya Shah", "Priya Shah", 50000, (50000, 50000), "MATCH", 0),
+        ("Priya Shah", "Priya Shah", 60000, (40000, 40000), "MISMATCH", 20000),
+        ("Priya Shah", "Riya Shah", 50000, (50000, 50000), "MISMATCH", 0),
+    ],
+)
+def test_salary_statement_comparison_status_and_monthly_credit_average(
+    monkeypatch, salary_name, bank_name, net, credits, expected, difference
+) -> None:
+    _local_extraction(monkeypatch)
+    documents, report = analyze_uploads(
+        _salary_bank_uploads(
+            salary_name=salary_name,
+            bank_name=bank_name,
+            net=net,
+            credits=credits,
+        ),
+        {"name": "Priya Shah", "employer": "Aarambh Demo Services", "income": 50000},
+        required_categories=("salary_slip", "bank_statement"),
+    )
+
+    verification = report["salary_statement_verification"]
+    assert verification["status"] == expected
+    assert verification["difference"] == difference
+    assert verification["bank_statement_average_monthly_salary_credit"] == sum(
+        credits
+    ) / len(credits)
+    assert len(verification["bank_statement_salary_credits"]) == len(credits)
+    assert report["missing_categories"] == []
+    assert "Salary Slip vs Bank Statement Verification" not in report["explanation"]
+    assert documents[1]["category"] == "bank_statement"
+
+
+def test_non_salary_bank_credits_are_not_counted_as_salary(monkeypatch) -> None:
+    _local_extraction(monkeypatch)
+    documents, report = analyze_uploads(
+        [
+            _salary_bank_uploads()[0],
+            {
+                "file_name": "statement.pdf",
+                "category": "bank_statement",
+                "content": _pdf(
+                    "Account holder: Priya Shah\n"
+                    "2026-03-01 NEFT SALARY credit Rs 50,000.00 CR\n"
+                    "2026-04-01 Refund credit Rs 100,000.00 CR"
+                ),
+            },
+        ],
+        {"name": "Priya Shah"},
+        required_categories=("salary_slip", "bank_statement"),
+    )
+
+    verification = report["salary_statement_verification"]
+    assert verification["status"] == "MATCH"
+    assert [item["amount"] for item in verification["bank_statement_salary_credits"]] == [
+        50000
+    ]
+
+
+@pytest.mark.parametrize(
+    ("uploads", "missing"),
+    [
+        (_salary_bank_uploads()[1:], "salary_slip"),
+        (_salary_bank_uploads()[:1], "bank_statement"),
+        (
+            [
+                _salary_bank_uploads()[0],
+                {
+                    **_salary_bank_uploads()[1],
+                    "content": b"",
+                },
+            ],
+            None,
+        ),
+    ],
+)
+def test_missing_or_unreadable_salary_documents_are_inconclusive(
+    monkeypatch, uploads, missing
+) -> None:
+    _local_extraction(monkeypatch)
+    _documents, report = analyze_uploads(
+        uploads,
+        {"name": "Priya Shah", "income": 50000},
+        required_categories=("salary_slip", "bank_statement"),
+    )
+    verification = report["salary_statement_verification"]
+    assert verification["status"] == "INCONCLUSIVE"
+    if missing:
+        assert missing in report["missing_categories"]
+
+
+def test_assessment_extracts_persists_and_reuses_uploaded_salary_documents(
+    tmp_path, monkeypatch
+) -> None:
+    _local_extraction(monkeypatch)
+    from loanpilot.agent import tools
+
+    monkeypatch.setattr(tools, "PROJECT_ROOT", tmp_path)
+    store = SQLiteStore(tmp_path / "assessment-time-documents.db")
+    create_schema(store)
+    records = []
+    for upload in _salary_bank_uploads(net=65000, credits=(40000, 40000)):
+        relative_path = f"data/documents/case/{upload['file_name']}"
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(upload["content"])
+        records.append(
+            {
+                "doc_type": upload["category"],
+                "category": upload["category"],
+                "file_name": upload["file_name"],
+                "file_path": relative_path,
+                "text_content": "",
+            }
+        )
+
+    application_id = create_intake_application(
+        {
+            "name": "Priya Shah",
+            "dob": "1990-01-01",
+            "age": 36,
+            "city": "Pune",
+            "mobile": "9000000000",
+            "employer": "Aarambh Demo Services",
+            "employment_type": "Salaried",
+            "current_tenure_months": 24,
+            "total_experience_months": 60,
+            "net_monthly_income": 50000,
+            "existing_emi": 0,
+            "pan_demo_id": "DEMO123456",
+        },
+        {
+            "requested_amount": 100000,
+            "tenure_months": 60,
+            "purpose": "Education",
+            "submitted_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        {"score": 800, "thin_file": False, "enquiries_6m": 0},
+        {"status": "verified", "name_match": 1.0},
+        records,
+        store,
+        application_id="APP-ASSESSMENT-DOC-TEST",
+    )
+
+    assessment = run_assessment(application_id, store)
+    report = get_document_verification_report(application_id, store)
+    assert report["salary_statement_verification"]["status"] == "MISMATCH"
+    assert report["salary_statement_verification"]["difference"] == 25000
+    assert len(get_document_verifications(application_id, store)) == 2
+    assert assessment["reconciliation"]["salary_statement_status"] == "MISMATCH"
+    clause = next(
+        row for row in assessment["policy"]["clauses"] if row["clause_id"] == "CP-6.2"
+    )
+    assert clause["status"] == "refer"
+    assert assessment["recommendation"] != "Decline"
+
+    run_assessment(application_id, store)
+    assert len(get_document_verifications(application_id, store)) == 2
 
 
 def test_generated_demo_documents_are_watermarked_and_not_verified() -> None:
@@ -281,85 +509,3 @@ def test_invalid_empty_scanned_and_duplicate_files_are_handled(
         if check["check"] == "Duplicate document"
     )
     assert duplicate_check["status"] == "Needs manual review"
-
-
-def test_verification_persists_and_assessment_uses_uploaded_evidence(
-    tmp_path, monkeypatch
-) -> None:
-    _local_extraction(monkeypatch)
-    store = SQLiteStore(tmp_path / "verified-application.db")
-    create_schema(store)
-    analyzed, report = analyze_uploads(
-        _uploads(net=65000, credits=40000),
-        {"name": "Priya Shah", "employer": "Aarambh Demo Services", "income": 50000},
-    )
-    docs = [
-        {
-            "doc_type": item["doc_type"],
-            "category": item["category"],
-            "file_name": item["file_name"],
-            "file_path": f"data/test/{item['file_name']}",
-            "text_content": item["text_content"],
-            "verification": {
-                key: item[key]
-                for key in (
-                    "extraction_status",
-                    "extraction_method",
-                    "extracted_fields",
-                    "field_evidence",
-                    "checks",
-                    "ai_explanation",
-                    "verification_status",
-                    "explanation",
-                    "authenticity_status",
-                )
-            },
-        }
-        for item in analyzed
-    ]
-    application_id = create_intake_application(
-        {
-            "name": "Priya Shah",
-            "dob": "1990-01-01",
-            "age": 36,
-            "city": "Pune",
-            "mobile": "9000000000",
-            "employer": "Aarambh Demo Services",
-            "employment_type": "Salaried",
-            "current_tenure_months": 24,
-            "total_experience_months": 60,
-            "net_monthly_income": 50000,
-            "existing_emi": 0,
-            "pan_demo_id": "DEMO123456",
-        },
-        {
-            "requested_amount": 100000,
-            "tenure_months": 60,
-            "purpose": "Education",
-            "submitted_at": datetime.now().isoformat(timespec="seconds"),
-        },
-        {"score": 800, "thin_file": False, "enquiries_6m": 0},
-        {"status": "pending"},
-        docs,
-        store,
-        application_id="APP-VERIFICATION-TEST",
-        verification_report=report,
-    )
-
-    persisted = get_document_verifications(application_id, store)
-    assert len(persisted) == 3
-    payslip = next(row for row in persisted if row["category"] == "payslip")
-    assert payslip["extracted_fields"]["net_salary"] == 65000
-    assert (
-        get_document_verification_report(application_id, store)["overall_status"]
-        == "Needs manual review"
-    )
-
-    assessment = run_assessment(application_id, store)
-    assert assessment["extracted"]["fields"]["net"] == 65000
-    assert assessment["reconciliation"]["document_failure"] is True
-    clause = next(
-        row for row in assessment["policy"]["clauses"] if row["clause_id"] == "CP-6.2"
-    )
-    assert clause["status"] == "refer"
-    assert assessment["recommendation"] != "Decline"

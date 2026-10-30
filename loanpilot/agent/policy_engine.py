@@ -253,10 +253,17 @@ def evaluate_policy(
         "low" if kyc_status_result == "pass" else "medium" if kyc_status_result == "refer" else "high",
     )
 
-    document_pass = all(
-        reconciliation.get(key, False)
-        for key in ("payslip_arithmetic_matches", "salary_credits_within_tolerance", "employer_matches")
-    ) and not reconciliation.get("document_failure", False)
+    if reconciliation.get("salary_statement_status"):
+        document_pass = not reconciliation.get("document_failure", False)
+    else:
+        document_pass = all(
+            reconciliation.get(key, False)
+            for key in (
+                "payslip_arithmetic_matches",
+                "salary_credits_within_tolerance",
+                "employer_matches",
+            )
+        ) and not reconciliation.get("document_failure", False)
     add(
         "CP-6.2",
         {

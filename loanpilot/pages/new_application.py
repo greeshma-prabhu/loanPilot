@@ -3,7 +3,6 @@
 from datetime import date, datetime
 from difflib import SequenceMatcher
 from io import BytesIO
-import hashlib
 import json
 import logging
 import mimetypes
@@ -25,8 +24,7 @@ from loanpilot.data.queries import (
     list_intake_customers,
 )
 from loanpilot.data.document_verification import (
-    CATEGORIES as _UPLOAD_CATEGORIES,
-    analyze_uploads,
+    MAX_PDF_BYTES,
     extract_pdf_text,
     synthetic_verification_report,
 )
@@ -221,17 +219,20 @@ def _widget_values(step_kind: str) -> dict:
     }
     uploads = []
     if _is_upload_mode(values["document_mode"]):
-        uploaded_files = st.session_state.get("intake_upload_pdfs") or []
-        for index, uploaded in enumerate(uploaded_files):
-            key = _upload_category_key(index, uploaded.name)
-            category_label = st.session_state.get(key, "Other supporting document")
-            uploads.append(
-                {
-                    "file_name": Path(uploaded.name.replace("\\", "/")).name,
-                    "content": bytes(uploaded.getvalue()),
-                    "category": _UPLOAD_CATEGORIES[category_label],
-                }
-            )
+        for category, key in (
+            ("salary_slip", "intake_salary_slip_pdf"),
+            ("bank_statement", "intake_bank_statement_pdf"),
+        ):
+            uploaded = st.session_state.get(key)
+            if uploaded is not None:
+                uploads.append(
+                    {
+                        "file_name": Path(uploaded.name.replace("\\", "/")).name,
+                        "content": bytes(uploaded.getvalue()),
+                        "category": category,
+                        "doc_type": category,
+                    }
+                )
     values["uploads"] = uploads
     return values
 
@@ -244,28 +245,6 @@ def _step_data(step_kind: str) -> dict:
 def _is_upload_mode(mode: str) -> bool:
     """Accept the previous persisted label while migrating intake session data."""
     return mode in {_DOCUMENT_MODES[1], "Upload my own PDFs"}
-
-
-def _upload_category_key(index: int, filename: str) -> str:
-    """Keep uploaded category selectors stable across Streamlit reruns."""
-    digest = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:10]
-    return f"intake_upload_category_{index}_{digest}"
-
-
-def _upload_fingerprint(uploads: list[dict], applicant: dict | None = None) -> str:
-    """Identify the exact file bytes and categories used for a preview analysis."""
-    digest = hashlib.sha256()
-    if applicant:
-        for key in ("name", "employer", "income", "job_months"):
-            digest.update(str(applicant.get(key, "")).encode("utf-8"))
-            digest.update(b"\0")
-    for upload in uploads:
-        digest.update(str(upload.get("category", "")).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(upload.get("file_name", "")).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(bytes(upload.get("content") or b""))
-    return digest.hexdigest()
 
 
 def _validate(data: dict, step_kind: str) -> str:
@@ -682,41 +661,31 @@ def _extract_pdf_text(content: bytes) -> tuple[str, str | None]:
 def _save_documents(
     application_id: str,
     data: dict,
-    analyzed_uploads: list[dict] | None = None,
 ) -> list[dict]:
-    """Generate or register uploaded PDFs beneath the configured project root."""
+    """Persist generated or uploaded source documents under the case ID."""
     folder = config.DOCUMENTS_DIR / application_id
     folder.mkdir(parents=True, exist_ok=True)
     documents = []
     if _is_upload_mode(data["document_mode"]):
-        for index, result in enumerate(analyzed_uploads or []):
+        for result in data.get("uploads", []):
             filename = Path(result["file_name"].replace("\\", "/")).name
+            content = bytes(result.get("content") or b"")
+            if not filename.casefold().endswith(".pdf"):
+                raise ValueError(f"{filename}: only PDF documents are supported.")
+            if len(content) > MAX_PDF_BYTES:
+                raise ValueError(f"{filename}: file exceeds the 10 MB limit.")
             safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
-            stored_name = f"{index + 1:02d}-{safe_filename or 'document.pdf'}"
+            category = str(result["category"])
+            stored_name = f"{category}-{safe_filename or 'document.pdf'}"
             target = folder / stored_name
             target.write_bytes(bytes(result["content"]))
-            verification = {
-                key: result[key]
-                for key in (
-                    "extraction_status",
-                    "extraction_method",
-                    "extracted_fields",
-                    "field_evidence",
-                    "checks",
-                    "ai_explanation",
-                    "verification_status",
-                    "explanation",
-                    "authenticity_status",
-                )
-            }
             documents.append(
                 {
-                    "doc_type": result["doc_type"],
-                    "category": result["category"],
+                    "doc_type": category,
+                    "category": category,
                     "file_name": filename,
                     "file_path": target.relative_to(config.PROJECT_ROOT).as_posix(),
-                    "text_content": result["text_content"],
-                    "verification": verification,
+                    "text_content": "",
                 }
             )
         return documents
@@ -836,62 +805,6 @@ def _add_another() -> None:
     st.session_state.pop("intake_error", None)
 
 
-def _autofill_demo() -> None:
-    """Replace intake entries with a fictional example without pre-consenting."""
-    data = _initial_intake()
-    data.update(
-        {
-            "name": "Demo Applicant",
-            "dob": "1990-01-01",
-            "city": "Pune",
-            "mobile": "9000000000",
-            "employer": "Aarambh Demo Services",
-            "employment_type": "Salaried",
-            "job_months": 24,
-            "experience_months": 60,
-            "income": 60000.0,
-            "existing_emi": 5000.0,
-            "amount": 250000.0,
-            "tenure": 36,
-            "purpose": "Education",
-        }
-    )
-    st.session_state["intake"] = data
-    st.session_state["intake_step"] = 0
-    st.session_state.pop("intake_error", None)
-    widget_values = {
-        "customer_type": "New to the bank",
-        "name": data["name"],
-        "dob": date.fromisoformat(data["dob"]),
-        "city": data["city"],
-        "mobile": data["mobile"],
-        "employer": data["employer"],
-        "employment_type": data["employment_type"],
-        "job_months": data["job_months"],
-        "experience_months": data["experience_months"],
-        "income": data["income"],
-        "existing_emi": data["existing_emi"],
-        "amount": data["amount"],
-        "tenure": data["tenure"],
-        "purpose": data["purpose"],
-        "document_mode": data["document_mode"],
-        "document_problem": data["document_problem"],
-        "problem_type": data["problem_type"],
-        "consent": data["consent"],
-        "declaration": data["declaration"],
-        "permanent": data["permanent"],
-        "identity_mode": data["identity_mode"],
-    }
-    for field, value in widget_values.items():
-        st.session_state[f"intake_widget_{field}"] = value
-    st.session_state.pop("intake_widget_existing_customer", None)
-    for doc_type in _IDENTITY_DOC_TYPES:
-        st.session_state.pop(f"intake_upload_{doc_type}", None)
-    for key in list(st.session_state):
-        if key.startswith("intake_upload_"):
-            st.session_state.pop(key, None)
-
-
 def _apply_identity_problem(data: dict) -> None:
     """Apply only the selected synthetic KYC demo issue to the stored response."""
     if not data["document_problem"]:
@@ -944,27 +857,8 @@ def _submit_application(store: SQLiteStore) -> None:
     )
     try:
         if _is_upload_mode(data["document_mode"]):
-            fingerprint = _upload_fingerprint(data["uploads"], data)
-            cached_analysis = data.get("document_analysis") or {}
-            if cached_analysis.get("fingerprint") == fingerprint:
-                analyzed_uploads = cached_analysis["documents"]
-                verification_report = cached_analysis["report"]
-            else:
-                analyzed_uploads, verification_report = analyze_uploads(
-                    data["uploads"],
-                    {
-                        "name": data["name"],
-                        "employer": data["employer"],
-                        "income": data["income"],
-                        "job_months": data["job_months"],
-                    },
-                )
-                data["document_analysis"] = {
-                    "fingerprint": fingerprint,
-                    "documents": analyzed_uploads,
-                    "report": verification_report,
-                }
-            documents = _save_documents(application_id, data, analyzed_uploads)
+            documents = _save_documents(application_id, data)
+            verification_report = None
         else:
             documents = _save_documents(application_id, data)
             verification_report = synthetic_verification_report(documents)
@@ -1265,13 +1159,6 @@ def _set_document_mode(mode: str) -> None:
     st.session_state.pop("intake_error", None)
 
 
-def _render_upload_report(documents: list[dict], report: dict) -> None:
-    """Render a concise verification report for the current unsubmitted intake."""
-    from loanpilot.components import render_document_verification_report
-
-    render_document_verification_report(documents, report)
-
-
 def _render_document_step(data: dict) -> None:
     """Render two document workflows, document preview/report, and declarations."""
     current_mode = data.get("document_mode", _DOCUMENT_MODES[0])
@@ -1300,8 +1187,8 @@ def _render_document_step(data: dict) -> None:
         with st.container(border=True):
             st.markdown("#### Upload my own documents")
             st.caption(
-                "Upload PDF documents and let LoanPilot extract, understand and "
-                "compare their information using AI."
+                "Save your Salary Slip and Bank Statement for extraction, "
+                "understanding, and comparison in AI Assessment."
             )
             st.button(
                 "Upload my own documents",
@@ -1364,71 +1251,31 @@ def _render_document_step(data: dict) -> None:
     else:
         st.session_state.setdefault("intake_widget_document_problem", False)
         st.session_state.setdefault("intake_widget_problem_type", _PROBLEMS[0])
-        st.caption("PDF only · maximum 10 MB per file. Required categories: identity, salary slip, and bank statement.")
-        st.markdown("**Upload → Extract → Understand → Compare → Verification report**")
-        uploaded_files = st.file_uploader(
-            "Upload multiple PDF documents",
-            type=["pdf"],
-            accept_multiple_files=True,
-            key="intake_upload_pdfs",
-            help="Files are copied before parsing and stored with this case after submission.",
-        ) or []
-        for index, uploaded in enumerate(uploaded_files):
-            col_name, col_category = st.columns([2, 1])
-            with col_name:
-                st.caption(uploaded.name)
-            with col_category:
-                st.selectbox(
-                    f"Category for {uploaded.name}",
-                    tuple(_UPLOAD_CATEGORIES),
-                    index=tuple(_UPLOAD_CATEGORIES).index(
-                        "Other supporting document"
-                    ),
-                    key=_upload_category_key(index, uploaded.name),
-                    label_visibility="collapsed",
-                )
-        analyze_column, status_column = st.columns([1, 2])
-        with analyze_column:
-            analyze_clicked = st.button(
-                "Analyze documents",
-                key="intake_analyze_documents",
-                help="Extract PDF text and compare explicitly stated values with this application.",
+        st.caption(
+            "Optional PDFs · maximum 10 MB each. Documents are saved with this "
+            "application; matching and mismatch detection happen in AI Assessment."
+        )
+        salary_col, statement_col = st.columns(2)
+        with salary_col:
+            st.file_uploader(
+                "Salary Slip",
+                type=["pdf"],
+                accept_multiple_files=False,
+                key="intake_salary_slip_pdf",
+                help="Saved as salary_slip for this application.",
             )
-        if analyze_clicked:
-            try:
-                upload_data = _widget_values("documents")["uploads"]
-                analyzed_documents, report = analyze_uploads(
-                    upload_data,
-                    {
-                        "name": data["name"],
-                        "employer": data["employer"],
-                        "income": data["income"],
-                        "job_months": data["job_months"],
-                    },
-                )
-                analysis = {
-                    "fingerprint": _upload_fingerprint(upload_data, data),
-                    "documents": analyzed_documents,
-                    "report": report,
-                }
-                st.session_state["intake"] = {
-                    **_intake(),
-                    "document_analysis": analysis,
-                }
-                st.session_state.pop("intake_error", None)
-            except (OSError, ValueError) as error:
-                st.session_state["intake_error"] = str(error)
-        with status_column:
-            st.caption("Issuer authenticity is not independently verified.")
-        upload_data = _widget_values("documents")["uploads"]
-        analysis = _intake().get("document_analysis") or {}
-        fingerprint = _upload_fingerprint(upload_data, data)
-        if analysis.get("fingerprint") == fingerprint:
-            _render_upload_report(analysis.get("documents", []), analysis["report"])
-        elif upload_data:
-            st.info("Select categories, then analyze the current files to see the verification report.")
-        else:
-            st.info("No PDFs uploaded. Missing required documents will be reported; you may still continue to assessment.")
+        with statement_col:
+            st.file_uploader(
+                "Bank Statement",
+                type=["pdf"],
+                accept_multiple_files=False,
+                key="intake_bank_statement_pdf",
+                help="Saved as bank_statement for this application.",
+            )
+        st.caption(
+            "AI extraction, name matching, salary-credit analysis, and the final "
+            "verification result are performed after submission in AI Assessment."
+        )
 
     summary = [
         ("Applicant", data["name"]),
@@ -1499,13 +1346,6 @@ def render(store: SQLiteStore | None = None) -> None:
             st.button("Add another", key="intake_add_another", on_click=_add_another)
         return
 
-    st.button(
-        "Auto-fill synthetic example",
-        key="intake_autofill_demo",
-        help="Replaces current entries with fictional demo details. Consent remains unchecked.",
-        on_click=_autofill_demo,
-        width="stretch",
-    )
     if "intake_step" not in st.session_state:
         st.session_state["intake_step"] = 0
     data = _intake()

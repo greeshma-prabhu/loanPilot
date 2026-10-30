@@ -102,6 +102,61 @@ def render_document_verification_report(
         + str(report.get("authenticity_status", "Not independently verified"))
     )
 
+    salary_statement = report.get("salary_statement_verification")
+    if salary_statement:
+        status = str(salary_statement.get("status", "INCONCLUSIVE"))
+        status_kind = {
+            "MATCH": "success",
+            "MISMATCH": "danger",
+            "INCONCLUSIVE": "warning",
+        }.get(status, "warning")
+        st.subheader("Salary Slip vs Bank Statement Verification")
+        st.markdown(status_chip(status, status_kind), unsafe_allow_html=True)
+        amount_columns = st.columns(3)
+        with amount_columns[0]:
+            st.metric(
+                "Salary Slip net salary",
+                fmt_inr(salary_statement.get("salary_slip_net_salary")),
+            )
+        with amount_columns[1]:
+            st.metric(
+                "Average monthly salary credit",
+                fmt_inr(
+                    salary_statement.get(
+                        "bank_statement_average_monthly_salary_credit"
+                    )
+                ),
+            )
+        with amount_columns[2]:
+            st.metric("Difference", fmt_inr(salary_statement.get("difference")))
+
+        name_comparison = salary_statement.get("name_comparison") or {}
+        st.write(
+            "**Name comparison:** "
+            f"{name_comparison.get('status', 'Missing information')} · "
+            f"Salary Slip: {name_comparison.get('salary_slip_name') or 'Unavailable'} · "
+            f"Bank Statement: {name_comparison.get('bank_statement_name') or 'Unavailable'}"
+        )
+        credits = salary_statement.get("bank_statement_salary_credits") or []
+        if credits:
+            st.caption(
+                "Only transactions explicitly identified as salary/payroll are "
+                "included; other bank credits are not assumed to be salary."
+            )
+            st.dataframe(
+                [
+                    {
+                        "Date": item.get("date") or "Not stated",
+                        "Salary credit": fmt_inr(item.get("amount")),
+                        "Transaction description": item.get("description") or "—",
+                    }
+                    for item in credits
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        st.write("**AI Finding:** " + str(salary_statement.get("explanation") or "No explanation available."))
+
     report_checks = report.get("checks") or []
     if report_checks:
         st.dataframe(

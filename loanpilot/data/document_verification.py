@@ -19,13 +19,21 @@ SALARY_TOLERANCE = 0.10
 
 CATEGORIES = {
     "Identity proof": "identity_proof",
-    "Salary slip": "payslip",
-    "Bank statement": "bank_statement_summary",
+    "Salary slip": "salary_slip",
+    "Bank statement": "bank_statement",
     "Employment proof": "employment_proof",
     "Other supporting document": "supporting_other",
 }
 REQUIRED_CATEGORIES = ("identity_proof", "payslip", "bank_statement_summary")
+SALARY_BANK_CATEGORIES = ("salary_slip", "bank_statement")
 _CATEGORY_LABELS = {value: key for key, value in CATEGORIES.items()}
+_CATEGORY_LABELS.update(
+    {
+        "payslip": "Salary slip",
+        "bank_statement_summary": "Bank statement",
+    }
+)
+_SUPPORTED_CATEGORIES = {*CATEGORIES.values(), "payslip", "bank_statement_summary"}
 
 
 def _ocr_pdf(content: bytes) -> tuple[str, str | None]:
@@ -97,6 +105,37 @@ def _prompt_fields(
             raise ValueError("Gemini did not return a JSON object.")
         explanation = result.pop("explanation", "")
         grounded = _ground_fields(result, text)
+        for field in (
+            "gross_salary",
+            "net_salary",
+            "deductions",
+            "average_monthly_salary_credits",
+        ):
+            value = grounded.get(field)
+            if isinstance(value, str):
+                amount = re.fullmatch(
+                    r"\s*(?:(?:INR|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{1,2})?)\s*",
+                    value,
+                    re.IGNORECASE,
+                )
+                grounded[field] = (
+                    float(amount.group(1).replace(",", "")) if amount else None
+                )
+        transactions = grounded.get("salary_credit_transactions")
+        if isinstance(transactions, list):
+            for transaction in transactions:
+                if not isinstance(transaction, dict):
+                    continue
+                amount = transaction.get("amount")
+                if isinstance(amount, str):
+                    match = re.fullmatch(
+                        r"\s*(?:(?:INR|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{1,2})?)\s*",
+                        amount,
+                        re.IGNORECASE,
+                    )
+                    transaction["amount"] = (
+                        float(match.group(1).replace(",", "")) if match else None
+                    )
         for key, value in _local_fields(category, text).items():
             if grounded.get(key) is None:
                 grounded[key] = value
@@ -166,7 +205,7 @@ def _line_value(text: str, *labels: str) -> str | None:
 def _local_fields(category: str, text: str) -> dict[str, Any]:
     """Extract only values found on labelled lines when Gemini is unavailable."""
     fields: dict[str, Any] = {}
-    if category == "payslip":
+    if category in {"payslip", "salary_slip"}:
         fields = {
             "employee_name": _line_value(text, "Employee", "Employee name", "Applicant", "Name"),
             "employer_name": _line_value(text, "Employer on payslip", "Employer", "Company"),
@@ -176,18 +215,18 @@ def _local_fields(category: str, text: str) -> dict[str, Any]:
             "deductions": _money(text, "Deductions", "Total deductions"),
             "employee_id": _line_value(text, "Employee ID", "Employee number"),
         }
-    elif category == "bank_statement_summary":
+    elif category in {"bank_statement_summary", "bank_statement"}:
         credits = []
         monthly_credits: dict[tuple[int, int], float] = {}
         for line in text.splitlines():
-            amount = _money(line, "salary credit", "salary credits")
-            if amount is not None:
-                credit_date = line.split(":", 1)[0].strip()
-                credits.append({"date": credit_date, "amount": amount})
-                credit_month = _parse_month(credit_date)
+            transaction = _salary_credit_from_line(line)
+            if transaction:
+                credits.append(transaction)
+                credit_month = _parse_month(str(transaction.get("date") or ""))
                 if credit_month:
                     monthly_credits[credit_month] = (
-                        monthly_credits.get(credit_month, 0.0) + amount
+                        monthly_credits.get(credit_month, 0.0)
+                        + float(transaction["amount"])
                     )
         average_salary_credits = _money(
             text, "Average monthly salary credits", "Average salary credits"
@@ -195,7 +234,9 @@ def _local_fields(category: str, text: str) -> dict[str, Any]:
         if average_salary_credits is None and monthly_credits:
             average_salary_credits = sum(monthly_credits.values()) / len(monthly_credits)
         fields = {
-            "account_holder_name": _line_value(text, "Account holder", "Account name", "Name"),
+            "account_holder_name": _line_value(
+                text, "Account holder", "Account name", "Applicant", "Name"
+            ),
             "bank_name": _line_value(text, "Bank name", "Bank"),
             "statement_period": _line_value(text, "Period", "Statement period"),
             "salary_credit_transactions": credits,
@@ -223,6 +264,73 @@ def _local_fields(category: str, text: str) -> dict[str, Any]:
     else:
         fields = {"description": text[:240].strip() or None}
     return {key: value for key, value in fields.items() if value is not None}
+
+
+def _salary_credit_from_line(line: str) -> dict[str, Any] | None:
+    """Recognize credits only when transaction text explicitly indicates payroll."""
+    lowered = line.casefold()
+    if re.search(r"\baverage\b", lowered):
+        return None
+    if not re.search(r"\b(salary|payroll|wages?)\b", lowered):
+        return None
+    if re.search(r"\b(debit|withdrawal|reversal|reversed|returned|return)\b", lowered):
+        return None
+    labelled_amount = _money(line, "salary credit", "salary credits")
+    if labelled_amount is None:
+        credit_marker = re.search(r"\b(?:cr|credit)\b", line, re.IGNORECASE)
+        if not credit_marker:
+            return None
+        date_match = re.search(
+            r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|\b\d{4}-\d{1,2}(?:-\d{1,2})?\b|"
+            r"\b\d{1,2}[-/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+            r"[-/]\d{2,4}\b",
+            line,
+            re.IGNORECASE,
+        )
+        without_date = (
+            line[: date_match.start()] + (" " * (date_match.end() - date_match.start()))
+            + line[date_match.end()]
+            if date_match
+            else line
+        )
+        amount_matches = list(
+            re.finditer(
+                r"(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
+                without_date,
+                re.IGNORECASE,
+            )
+        )
+        if not amount_matches:
+            return None
+        preceding = [
+            match
+            for match in amount_matches
+            if match.end() <= credit_marker.start()
+        ]
+        selected = preceding[-1] if preceding else next(
+            (match for match in amount_matches if match.start() >= credit_marker.end()),
+            None,
+        )
+        if selected is None:
+            return None
+        try:
+            labelled_amount = float(selected.group(1).replace(",", ""))
+        except ValueError:
+            return None
+    if labelled_amount <= 0:
+        return None
+    date_match = re.search(
+        r"\b(\d{4}-\d{1,2}(?:-\d{1,2})?|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|"
+        r"\d{1,2}[-/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"[-/]\d{2,4})\b",
+        line,
+        re.IGNORECASE,
+    )
+    return {
+        "date": date_match.group(1) if date_match else "",
+        "description": line.strip()[:160],
+        "amount": labelled_amount,
+    }
 
 
 def _normalize(value: str) -> str:
@@ -270,7 +378,22 @@ def _field_evidence(text: str, value: Any) -> str:
 
 def _parse_month(value: str) -> tuple[int, int] | None:
     """Parse common month/date formats without guessing a missing year."""
-    for pattern in ("%Y-%m-%d", "%Y-%m", "%B %Y", "%b %Y", "%m/%Y", "%m-%Y"):
+    for pattern in (
+        "%Y-%m-%d",
+        "%Y-%m",
+        "%B %Y",
+        "%b %Y",
+        "%m/%Y",
+        "%m-%Y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%d/%m/%y",
+        "%d-%m-%y",
+        "%d-%b-%Y",
+        "%d-%B-%Y",
+        "%d/%b/%Y",
+        "%d/%B/%Y",
+    ):
         try:
             parsed = datetime.strptime(value.strip(), pattern)
             return parsed.year, parsed.month
@@ -334,6 +457,8 @@ def _transaction_months(transactions: Any) -> set[tuple[int, int]]:
 def analyze_uploads(
     uploads: list[Mapping[str, Any]],
     applicant: Mapping[str, Any],
+    *,
+    required_categories: tuple[str, ...] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Extract, compare, and summarize uploaded files without asserting authenticity."""
     documents: list[dict[str, Any]] = []
@@ -342,14 +467,22 @@ def analyze_uploads(
         filename = str(upload.get("file_name", "document.pdf"))
         content = bytes(upload.get("content") or b"")
         category = str(upload.get("category") or "")
-        if category not in CATEGORIES.values():
+        if category not in _SUPPORTED_CATEGORIES:
             raise ValueError(f"Choose a supported category for {filename}.")
         if not filename.casefold().endswith(".pdf"):
             raise ValueError(f"{filename}: only PDF documents are supported.")
-        text, extraction_status, extraction_message = extract_pdf_text(content)
-        if extraction_status == "Unsupported":
-            raise ValueError(f"{filename}: {extraction_message}")
-        digest = hashlib.sha256(content).hexdigest()
+        stored_text = str(upload.get("text_content") or "").strip()
+        if not content and stored_text:
+            text = stored_text
+            extraction_status = "Readable (stored text)"
+            extraction_message = "Using previously stored extracted text."
+        else:
+            text, extraction_status, extraction_message = extract_pdf_text(content)
+            if extraction_status == "Unsupported" and "10 MB" in extraction_message:
+                raise ValueError(f"{filename}: {extraction_message}")
+            if extraction_status == "Unsupported":
+                extraction_status = "Unreadable"
+        digest = hashlib.sha256(content or text.encode("utf-8")).hexdigest()
         duplicate_of = seen_hashes.get(digest)
         seen_hashes.setdefault(digest, filename)
         fields, extraction_method, ai_explanation = (
@@ -363,7 +496,7 @@ def analyze_uploads(
             if value is not None
         }
         if (
-            category == "bank_statement_summary"
+            category in {"bank_statement_summary", "bank_statement"}
             and fields.get("average_monthly_salary_credits") is not None
             and not evidence.get("average_monthly_salary_credits")
             and fields.get("salary_credit_transactions")
@@ -377,6 +510,7 @@ def analyze_uploads(
             )
         documents.append(
             {
+                "doc_id": upload.get("doc_id"),
                 "doc_type": category,
                 "category": category,
                 "file_name": filename,
@@ -454,7 +588,7 @@ def analyze_uploads(
                         explanation="Compared the extracted employer with the application entry.",
                     )
                 )
-            if document["category"] == "payslip":
+            if document["category"] in {"payslip", "salary_slip"}:
                 net = fields.get("net_salary")
                 if isinstance(net, (int, float)):
                     salary_values.append((float(net), document["file_name"]))
@@ -483,7 +617,7 @@ def analyze_uploads(
                             ),
                         )
                     )
-            if document["category"] == "bank_statement_summary":
+            if document["category"] in {"bank_statement_summary", "bank_statement"}:
                 average = fields.get("average_monthly_salary_credits")
                 if isinstance(average, (int, float)):
                     statement_values.append((float(average), document["file_name"]))
@@ -587,7 +721,8 @@ def analyze_uploads(
         )
 
     categories = {document["category"] for document in documents}
-    missing = [category for category in REQUIRED_CATEGORIES if category not in categories]
+    required = required_categories or REQUIRED_CATEGORIES
+    missing = [category for category in required if category not in categories]
     for category in missing:
         cross_checks.append(
             _check(
@@ -641,11 +776,234 @@ def analyze_uploads(
         "analysis_method": "Gemini when configured; otherwise labelled local extraction and deterministic comparisons.",
         "salary_tolerance": SALARY_TOLERANCE,
     }
+    salary_bank_verification = _salary_bank_verification(
+        documents, applicant, required_categories=required_categories
+    )
+    if salary_bank_verification is not None:
+        report["salary_statement_verification"] = salary_bank_verification
+        report["explanation"] = salary_bank_verification["explanation"]
+        if salary_bank_verification["status"] == "MATCH":
+            report["overall_status"] = "Verified / Consistent"
+        elif salary_bank_verification["status"] == "MISMATCH":
+            report["overall_status"] = "Needs manual review"
+        else:
+            report["overall_status"] = (
+                "Incomplete"
+                if missing
+                and not any(
+                    not document["extraction_status"].startswith("Readable")
+                    for document in documents
+                )
+                else "Needs manual review"
+            )
     for document in documents:
         document["verification_status"] = _document_status(document)
         document["explanation"] = _document_explanation(document)
-        document["overall_status"] = overall_status
+        document["overall_status"] = report["overall_status"]
     return documents, report
+
+
+def _salary_bank_verification(
+    documents: list[dict[str, Any]],
+    applicant: Mapping[str, Any],
+    *,
+    required_categories: tuple[str, ...] | None,
+) -> dict[str, Any] | None:
+    """Compare salary evidence, retaining source-linked transaction detail."""
+    is_salary_bank_workflow = required_categories == SALARY_BANK_CATEGORIES or any(
+        document["category"] in SALARY_BANK_CATEGORIES
+        or document["category"] in {"payslip", "bank_statement_summary"}
+        for document in documents
+    )
+    if not is_salary_bank_workflow:
+        return None
+
+    salary_slip = next(
+        (
+            document
+            for document in documents
+            if document["category"] in {"salary_slip", "payslip"}
+        ),
+        None,
+    )
+    bank_statement = next(
+        (
+            document
+            for document in documents
+            if document["category"] in {"bank_statement", "bank_statement_summary"}
+        ),
+        None,
+    )
+    salary_fields = (salary_slip or {}).get("extracted_fields", {})
+    bank_fields = (bank_statement or {}).get("extracted_fields", {})
+    salary_name = salary_fields.get("employee_name") or salary_fields.get("name")
+    bank_name = (
+        bank_fields.get("account_holder_name")
+        or bank_fields.get("employee_name")
+        or bank_fields.get("name")
+    )
+    net_salary = salary_fields.get("net_salary")
+    raw_credits = bank_fields.get("salary_credit_transactions")
+    usable_credits = [
+        {
+            "date": str(item.get("date") or ""),
+            "description": str(item.get("description") or ""),
+            "amount": float(item["amount"]),
+        }
+        for item in (raw_credits if isinstance(raw_credits, list) else [])
+        if isinstance(item, dict)
+        and isinstance(item.get("amount"), (int, float))
+        and float(item["amount"]) > 0
+    ]
+
+    monthly_totals: dict[tuple[int, int], float] = {}
+    for credit in usable_credits:
+        month = _parse_month(credit["date"])
+        if month:
+            monthly_totals[month] = (
+                monthly_totals.get(month, 0.0) + credit["amount"]
+            )
+    monthly_credits = [
+        {"month": f"{year:04d}-{month:02d}", "amount": amount}
+        for (year, month), amount in sorted(monthly_totals.items())
+    ]
+    explicit_average = bank_fields.get("average_monthly_salary_credits")
+    if isinstance(explicit_average, (int, float)):
+        average_credit = float(explicit_average)
+    elif monthly_credits:
+        average_credit = sum(item["amount"] for item in monthly_credits) / len(
+            monthly_credits
+        )
+    elif usable_credits:
+        average_credit = sum(item["amount"] for item in usable_credits) / len(
+            usable_credits
+        )
+    else:
+        average_credit = None
+
+    name_status = (
+        "Match"
+        if salary_name and bank_name and _normalize(str(salary_name)) == _normalize(str(bank_name))
+        else "Mismatch"
+        if salary_name and bank_name
+        else "Missing information"
+    )
+    declared_name_status = (
+        "Match"
+        if salary_name
+        and applicant.get("name")
+        and _normalize(str(salary_name)) == _normalize(str(applicant.get("name")))
+        else "Mismatch"
+        if salary_name and applicant.get("name")
+        else "Missing information"
+    )
+    difference = (
+        abs(float(net_salary) - average_credit)
+        if isinstance(net_salary, (int, float)) and average_credit is not None
+        else None
+    )
+    variance = difference / float(net_salary) if difference is not None and net_salary else None
+    if name_status in {"Mismatch", "Minor difference"} or declared_name_status in {
+        "Mismatch",
+        "Minor difference",
+    }:
+        status = "MISMATCH"
+    elif variance is not None and variance > SALARY_TOLERANCE:
+        status = "MISMATCH"
+    elif (
+        salary_slip is None
+        or bank_statement is None
+        or not salary_slip["extraction_status"].startswith("Readable")
+        or not bank_statement["extraction_status"].startswith("Readable")
+        or not salary_name
+        or not bank_name
+        or not isinstance(net_salary, (int, float))
+        or average_credit is None
+    ):
+        status = "INCONCLUSIVE"
+    else:
+        status = "MATCH"
+
+    if status == "MATCH":
+        explanation = (
+            "The applicant names are consistent and the salary slip net salary "
+            "is within the configured tolerance of identified bank salary credits."
+        )
+    elif status == "MISMATCH":
+        findings = []
+        if name_status in {"Mismatch", "Minor difference"} or declared_name_status in {
+            "Mismatch",
+            "Minor difference",
+        }:
+            findings.append(
+                "The applicant names differ across the submitted details and documents."
+            )
+        if variance is not None and variance > SALARY_TOLERANCE:
+            findings.append(
+                "The salary slip net salary materially differs from identified bank salary credits."
+            )
+        explanation = " ".join(findings)
+    else:
+        findings = []
+        if salary_slip is None:
+            findings.append("A salary slip was not provided.")
+        elif not salary_slip["extraction_status"].startswith("Readable"):
+            findings.append("The salary slip could not be read.")
+        if bank_statement is None:
+            findings.append("A bank statement was not provided.")
+        elif not bank_statement["extraction_status"].startswith("Readable"):
+            findings.append("The bank statement could not be read.")
+        if salary_slip and bank_statement and average_credit is None:
+            findings.append(
+                "Salary credit transactions could not be confidently identified."
+            )
+        if not findings:
+            findings.append("The available salary evidence is incomplete.")
+        explanation = " ".join(findings)
+
+    result = {
+        "status": status,
+        "salary_slip_net_salary": (
+            float(net_salary) if isinstance(net_salary, (int, float)) else None
+        ),
+        "bank_statement_salary_credits": usable_credits,
+        "bank_statement_monthly_salary_credits": monthly_credits,
+        "bank_statement_average_monthly_salary_credit": average_credit,
+        "difference": difference,
+        "name_comparison": {
+            "salary_slip_name": salary_name,
+            "bank_statement_name": bank_name,
+            "declared_applicant_name": applicant.get("name"),
+            "status": (
+                "Mismatch"
+                if name_status in {"Mismatch", "Minor difference"}
+                or declared_name_status in {"Mismatch", "Minor difference"}
+                else "Match"
+                if name_status == "Match" and declared_name_status == "Match"
+                else "Missing information"
+            ),
+        },
+        "tolerance": SALARY_TOLERANCE,
+        "explanation": explanation,
+    }
+    try:
+        generated = generate_json_with_gemini(
+            "Rewrite the following finding in one concise sentence. Use only these "
+            "facts, do not add evidence, and do not claim authenticity. Return a "
+            "JSON object with an explanation string.\n"
+            + json.dumps(result, ensure_ascii=False, sort_keys=True)
+        )
+        generated_explanation = generated.get("explanation")
+        if isinstance(generated_explanation, str) and generated_explanation.strip():
+            result["explanation"] = generated_explanation.strip()[:500]
+            result["explanation_method"] = "Gemini"
+    except Exception as error:
+        LOGGER.info(
+            "Gemini verification explanation unavailable (%s); using deterministic finding.",
+            type(error).__name__,
+        )
+        result["explanation_method"] = "Grounded deterministic explanation"
+    return result
 
 
 def _document_status(document: Mapping[str, Any]) -> str:

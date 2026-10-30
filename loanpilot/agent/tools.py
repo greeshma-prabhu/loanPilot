@@ -2,8 +2,10 @@
 
 import re
 import unicodedata
+from pathlib import Path
 from typing import Any
 
+from loanpilot.config import PROJECT_ROOT
 from loanpilot.agent.llm import LIVE_MODE, run_json_step
 from loanpilot.agent.policy_engine import (
     evaluate_policy,
@@ -21,8 +23,13 @@ from loanpilot.data.queries import (
     get_kyc,
     get_repayment_summary,
     get_transactions,
+    save_document_verification_results,
 )
 from loanpilot.data.store import SQLiteStore
+from loanpilot.data.document_verification import (
+    SALARY_BANK_CATEGORIES,
+    analyze_uploads,
+)
 
 def _number(text: str, label: str) -> float | None:
     """Read a labelled money value from an extracted synthetic document."""
@@ -103,6 +110,45 @@ def get_features(application_id: str, store: SQLiteStore) -> dict[str, Any]:
         raise ValueError(f"Unknown application id: {application_id}")
     application = application_rows.iloc[0].to_dict()
     customer = get_customer(application["customer_id"], store).iloc[0].to_dict()
+    documents = get_documents(application_id, store).to_dict("records")
+    uploads = []
+    root = Path(PROJECT_ROOT).resolve()
+    for document in documents:
+        category = str(document.get("category") or document.get("doc_type") or "")
+        category = {
+            "payslip": "salary_slip",
+            "bank_statement_summary": "bank_statement",
+        }.get(category, category)
+        if category not in SALARY_BANK_CATEGORIES:
+            continue
+        try:
+            path = (root / str(document.get("file_path") or "")).resolve()
+            path.relative_to(root)
+            content = path.read_bytes() if path.is_file() else b""
+        except (OSError, ValueError):
+            content = b""
+        uploads.append(
+            {
+                "doc_id": document["doc_id"],
+                "file_name": document["file_name"],
+                "category": category,
+                "content": content,
+                "text_content": document.get("text_content", ""),
+            }
+        )
+    analyzed_documents, analyzed_report = analyze_uploads(
+        uploads,
+        {
+            "name": customer.get("name", ""),
+            "employer": customer.get("employer", ""),
+            "income": customer.get("net_monthly_income"),
+            "job_months": customer.get("current_tenure_months"),
+        },
+        required_categories=SALARY_BANK_CATEGORIES,
+    )
+    save_document_verification_results(
+        application_id, analyzed_documents, analyzed_report, store
+    )
     documents = get_documents(application_id, store).to_dict("records")
     document_verifications = get_document_verifications(application_id, store)
     document_verification_report = get_document_verification_report(
@@ -251,11 +297,19 @@ def reconcile_documents(
     )
     report = features.get("document_verification_report") or {}
     verification_status = str(report.get("overall_status", ""))
+    salary_statement = report.get("salary_statement_verification") or {}
+    salary_statement_status = str(salary_statement.get("status", ""))
     manual_document_review = verification_status in {
         "Needs manual review",
         "Incomplete",
         "Partially verified",
     }
+    if salary_statement_status:
+        document_failure = salary_statement_status != "MATCH"
+    else:
+        document_failure = manual_document_review or not (
+            arithmetic_matches and salary_within_tolerance and employer_matches
+        )
     return {
         "payslip_arithmetic_matches": arithmetic_matches,
         "salary_credits_within_tolerance": salary_within_tolerance,
@@ -265,10 +319,11 @@ def reconcile_documents(
         "salary_credits_avg": salary_average,
         "employer_on_document": employer_document,
         "employer_on_record": employer_record,
-        "document_failure": manual_document_review
-        or not (arithmetic_matches and salary_within_tolerance and employer_matches),
+        "document_failure": document_failure,
         "document_verification_status": verification_status or "Not assessed",
         "document_verification_explanation": report.get("explanation", ""),
+        "salary_statement_status": salary_statement_status or None,
+        "salary_statement_verification": salary_statement or None,
     }
 
 

@@ -100,7 +100,7 @@ def test_custom_applicant_submits_and_lands_on_assessment(
     app.button(key="intake_next").click().run()
     app.button(key="intake_next").click().run()
     assert app.session_state["intake_step"] == 4
-    assert app.radio(key="intake_widget_document_mode").value.startswith("Generate")
+    assert app.session_state["intake_widget_document_mode"] == "Use synthetic demo documents"
     app.checkbox(key="intake_widget_document_problem").check().run()
     app.selectbox(key="intake_widget_problem_type").select(
         "Salary credits about 30% below the payslip"
@@ -116,7 +116,7 @@ def test_custom_applicant_submits_and_lands_on_assessment(
     )
     assert app.title[0].value == "New Application"
     docs = get_documents(application_id, seeded_store)
-    assert len(docs) == 4
+    assert len(docs) == 5
     assert "identity_sheet" in set(docs.doc_type)
     payload = get_kyc(application_id, seeded_store).iloc[0]["payload"]
     assert payload["status"] == "verified"
@@ -148,6 +148,27 @@ def test_custom_applicant_submits_and_lands_on_assessment(
         shutil.rmtree(identity_folder)
 
 
+def test_repeated_submission_callback_does_not_duplicate_a_saved_case(
+    tmp_path, create_user_case
+) -> None:
+    """A repeated Streamlit submit callback is a no-op after successful persistence."""
+    store = SQLiteStore(tmp_path / "duplicate-submit.db")
+    application_id = create_user_case(store, "APP-NEW-SUBMIT-ONCE")
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from loanpilot.pages.new_application import _submit_application\n"
+        "from loanpilot.data.store import SQLiteStore\n"
+        f"st.session_state['intake_application_id'] = {application_id!r}\n"
+        f"_submit_application(SQLiteStore({str(store.path)!r}))\n"
+    ).run()
+
+    assert not app.exception
+    assert store.query(
+        "SELECT COUNT(*) AS count FROM cur_applications WHERE application_id = ?",
+        (application_id,),
+    ).iloc[0]["count"] == 1
+
+
 def test_document_controls_keep_values_when_switching_modes(tmp_path) -> None:
     """Checkbox choices persist when their controls are temporarily hidden."""
     store = SQLiteStore(tmp_path / "intake-controls.db")
@@ -162,15 +183,12 @@ def test_document_controls_keep_values_when_switching_modes(tmp_path) -> None:
         f"render(SQLiteStore({str(store.path)!r}))\n"
     ).run()
     problem_key = "intake_widget_document_problem"
-    mode_key = "intake_widget_document_mode"
     problem_box = app.checkbox(key=problem_key)
     problem_box.check().run()
     assert app.checkbox(key=problem_key).value is True
 
-    app.radio(key=mode_key).set_value("Upload my own PDFs").run()
-    app.radio(key=mode_key).set_value(
-        "Generate synthetic documents from my entries"
-    ).run()
+    app.button(key="intake_select_upload_documents").click().run()
+    app.button(key="intake_select_demo_documents").click().run()
     assert app.checkbox(key=problem_key).value is True
     assert app.session_state["intake"]["document_problem"] is True
 

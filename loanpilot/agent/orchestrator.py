@@ -190,6 +190,8 @@ def run_assessment(
                 "evidence": extracted["evidence"],
                 "anomaly_description": extracted["anomaly_description"],
                 "reconciliation": reconciliation,
+                "document_verifications": extracted.get("document_verifications", []),
+                "document_report": extracted.get("document_report"),
             }
         elif step_no == 2:
             finances = _call(

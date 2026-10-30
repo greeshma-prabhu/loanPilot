@@ -35,10 +35,33 @@ CREATE TABLE IF NOT EXISTS raw_documents (
     doc_id TEXT PRIMARY KEY,
     application_id TEXT NOT NULL,
     doc_type TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     text_content TEXT NOT NULL,
     uploaded_at TEXT NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
+CREATE TABLE IF NOT EXISTS raw_document_verifications (
+    doc_id TEXT PRIMARY KEY,
+    application_id TEXT NOT NULL,
+    extraction_status TEXT NOT NULL,
+    extraction_method TEXT NOT NULL,
+    extracted_fields_json TEXT NOT NULL,
+    field_evidence_json TEXT NOT NULL,
+    checks_json TEXT NOT NULL,
+    ai_explanation TEXT NOT NULL DEFAULT '',
+    verification_status TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    authenticity_status TEXT NOT NULL,
+    FOREIGN KEY (doc_id) REFERENCES raw_documents(doc_id) ON DELETE CASCADE,
+    FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
+);
+CREATE TABLE IF NOT EXISTS raw_document_verification_reports (
+    application_id TEXT PRIMARY KEY,
+    overall_status TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     FOREIGN KEY (application_id) REFERENCES cur_applications(application_id)
 );
 CREATE TABLE IF NOT EXISTS raw_bureau_responses (
@@ -328,3 +351,24 @@ def create_schema(store: SQLiteStore) -> None:
                 connection.execute(
                     f"ALTER TABLE raw_library_documents ADD COLUMN {column} {definition}"
                 )
+        raw_document_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(raw_documents)")
+        }
+        if "category" not in raw_document_columns:
+            connection.execute(
+                "ALTER TABLE raw_documents ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            "UPDATE raw_documents SET category = doc_type WHERE category = ''"
+        )
+        verification_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(raw_document_verifications)"
+            )
+        }
+        if "ai_explanation" not in verification_columns:
+            connection.execute(
+                "ALTER TABLE raw_document_verifications "
+                "ADD COLUMN ai_explanation TEXT NOT NULL DEFAULT ''"
+            )

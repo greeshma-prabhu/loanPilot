@@ -246,6 +246,24 @@ def _render_notification_panel(store: SQLiteStore) -> None:
     """Render a compact, dismissible notification panel in the Overview header."""
     notifications = list_document_notifications(store)
     unread_count = sum(item.get("read_at") is None for item in notifications)
+    bell_color = "#dc2626" if unread_count else "#ffffff"
+    st.markdown(
+        f"""
+        <style>
+        .st-key-overview_notification_toggle button {{
+            background: #173b57 !important;
+            border-color: #173b57 !important;
+            color: #ffffff !important;
+        }}
+        .st-key-overview_notification_toggle button [data-testid="stIconMaterial"],
+        .st-key-overview_notification_toggle button .material-symbols-rounded {{
+            color: {bell_color} !important;
+            -webkit-text-fill-color: {bell_color} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     if st.button(
         str(unread_count) if unread_count else "",
         icon=":material/notifications:",

@@ -301,12 +301,16 @@ def test_overview_notification_panel_expands_summary_and_marks_read(tmp_path) ->
 
     assert not app.exception
     assert unread_document_notification_count(store) == 2
+    bell_styles = "\n".join(str(element.value) for element in app.markdown)
+    assert "color: #dc2626" in bell_styles
     app.button(key="overview_notification_toggle").click().run()
     assert app.session_state["overview_notifications_open"] is True
     assert app.button(key="overview_notifications_close")
     app.button(key="overview_notifications_mark_all_read").click().run()
     assert not app.exception
     assert unread_document_notification_count(store) == 0
+    bell_styles = "\n".join(str(element.value) for element in app.markdown)
+    assert "color: #ffffff" in bell_styles
     assert app.button(key="overview_notification_toggle").label == ""
     app.button(key="overview_notifications_close").click().run()
     assert not app.exception

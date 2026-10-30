@@ -79,6 +79,126 @@ def status_chip(text: str, kind: str = "neutral") -> str:
     )
 
 
+def render_document_verification_report(
+    documents: list[dict[str, Any]],
+    report: dict[str, Any],
+) -> None:
+    """Render source-linked extracted fields and consistency checks."""
+    overall = str(report.get("overall_status", "Incomplete"))
+    kind = (
+        "success"
+        if overall in {"Verified / Consistent", "Synthetic demo documents"}
+        else "danger"
+        if overall == "Needs manual review"
+        else "warning"
+    )
+    st.subheader("Document verification report")
+    st.markdown(status_chip(overall, kind), unsafe_allow_html=True)
+    st.write(report.get("explanation") or "No document analysis explanation is available.")
+    if report.get("analysis_method"):
+        st.caption(str(report["analysis_method"]))
+    st.caption(
+        "Issuer authenticity: "
+        + str(report.get("authenticity_status", "Not independently verified"))
+    )
+
+    report_checks = report.get("checks") or []
+    if report_checks:
+        st.dataframe(
+            [
+                {
+                    "Check": check.get("check", ""),
+                    "Result": check.get("status", ""),
+                    "Document value": check.get("document_value") or "—",
+                    "Application value": check.get("declared_value") or "—",
+                    "Evidence": check.get("evidence") or "—",
+                    "Explanation": check.get("explanation") or "—",
+                }
+                for check in report_checks
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+    if not documents:
+        missing = report.get("missing_categories") or []
+        if missing:
+            st.warning(
+                "Missing required documents: "
+                + ", ".join(str(item).replace("_", " ") for item in missing)
+                + "."
+            )
+        return
+
+    for index, document in enumerate(documents):
+        fields = document.get("extracted_fields", {})
+        checks = document.get("checks", [])
+        status = document.get("verification_status", "Synthetic demo")
+        filename = str(document.get("file_name", "Document"))
+        category = str(document.get("category", document.get("doc_type", "Document")))
+        with st.expander(
+            f"{filename} · {category.replace('_', ' ').title()} · {status}",
+            expanded=index == 0,
+        ):
+            st.write(
+                "Extraction: "
+                + str(
+                    document.get(
+                        "extraction_status",
+                        "Synthetic document generated from applicant entries",
+                    )
+                )
+            )
+            if document.get("extraction_method"):
+                st.write("Extraction method: " + str(document["extraction_method"]))
+            st.write(
+                "Explanation: "
+                + str(document.get("explanation") or "Watermarked demo document.")
+            )
+            if fields:
+                evidence = document.get("field_evidence", {})
+                st.dataframe(
+                    [
+                        {
+                            "Extracted field": key.replace("_", " ").title(),
+                            "Value": value if value is not None else "Missing",
+                            "Source evidence": evidence.get(key) or "No matching text line",
+                        }
+                        for key, value in fields.items()
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info(
+                    "No structured fields were extracted. The original PDF remains attached to this application."
+                )
+            if checks:
+                st.dataframe(
+                    [
+                        {
+                            "Check": check.get("check", ""),
+                            "Result": check.get("status", ""),
+                            "Document value": check.get("document_value") or "—",
+                            "Application value": check.get("declared_value") or "—",
+                            "Evidence": check.get("evidence") or "—",
+                            "Explanation": check.get("explanation") or "—",
+                        }
+                        for check in checks
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            st.caption(
+                "Authenticity: "
+                + str(
+                    document.get(
+                        "authenticity_status", "Not independently verified"
+                    )
+                )
+            )
+
+
 def case_header_card(application: Any) -> None:
     """Render a compact applicant identity and status header."""
     value = application.to_dict() if hasattr(application, "to_dict") else application

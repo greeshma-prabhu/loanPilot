@@ -38,7 +38,6 @@ def list_applications(
             (
                 "(a.persona_key IS NULL OR a.application_id LIKE 'APP-SYNTH-%')",
                 "a.application_id NOT LIKE 'APP-HIST-%'",
-                "a.application_id NOT LIKE 'APP-CUSTOM-%'",
             )
         )
     if filters.get("worklist") == "Active":
@@ -193,7 +192,9 @@ def get_documents(application_id: str, store: SQLiteStore | None = None) -> pd.D
     """Fetch registered document metadata and extracted text."""
     return _store(store).query(
         """
-        SELECT doc_id, application_id, doc_type, file_name, file_path,
+        SELECT doc_id, application_id, doc_type,
+               COALESCE(NULLIF(category, ''), doc_type) AS category,
+               file_name, file_path,
                text_content, uploaded_at
         FROM raw_documents
         WHERE application_id = ?
@@ -201,6 +202,50 @@ def get_documents(application_id: str, store: SQLiteStore | None = None) -> pd.D
         """,
         (application_id,),
     )
+
+
+def get_document_verifications(
+    application_id: str,
+    store: SQLiteStore | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch parsed, source-linked extraction and consistency results."""
+    from loanpilot.data.document_verification import decode_verification_row
+
+    rows = _store(store).query(
+        """
+        SELECT v.*, d.file_name, d.file_path, d.category, d.doc_type
+        FROM raw_document_verifications v
+        JOIN raw_documents d ON d.doc_id = v.doc_id
+        WHERE v.application_id = ?
+        ORDER BY d.uploaded_at, d.doc_id
+        """,
+        (application_id,),
+    )
+    return [decode_verification_row(row) for row in rows.to_dict("records")]
+
+
+def get_document_verification_report(
+    application_id: str,
+    store: SQLiteStore | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the persisted case-level completeness and verification summary."""
+    result = _store(store).query(
+        "SELECT overall_status, report_json, created_at "
+        "FROM raw_document_verification_reports WHERE application_id = ?",
+        (application_id,),
+    )
+    if result.empty:
+        return None
+    row = result.iloc[0]
+    try:
+        report = json.loads(row["report_json"])
+    except (json.JSONDecodeError, TypeError):
+        report = {}
+    return {
+        **report,
+        "overall_status": row["overall_status"],
+        "created_at": row["created_at"],
+    }
 
 
 def register_document(
@@ -212,14 +257,15 @@ def register_document(
     _store(store).execute(
         """
         INSERT INTO raw_documents
-            (doc_id, application_id, doc_type, file_name, file_path,
+            (doc_id, application_id, doc_type, category, file_name, file_path,
              text_content, uploaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             f"DOC-{uuid4().hex.upper()}",
             application_id,
             document["doc_type"],
+            document.get("category", document["doc_type"]),
             document["file_name"],
             document["file_path"],
             document["text_content"],
@@ -421,28 +467,24 @@ def get_human_review_cases(
     """Fetch cases for the Human Review queue using its status and search filters."""
     stage_filters = {
         "Pending": ("Human Review",),
-        "Approved": ("Sanction", "Disbursed (simulated)"),
+        "Approved": ("Approved", "Sanction", "Disbursed (simulated)"),
         "Rejected": ("Rejected",),
-        "All": (
-            "Human Review",
-            "Sanction",
-            "Disbursed (simulated)",
-            "Rejected",
-            "Escalated",
-            "Awaiting documents",
-        ),
+        "All": None,
     }
     if status_filter not in stage_filters:
         raise ValueError(f"Unknown Human Review status filter: {status_filter}")
     stages = stage_filters[status_filter]
-    placeholders = ", ".join("?" for _ in stages)
     search_sql = ""
-    params: list[Any] = list(stages)
+    params: list[Any] = []
+    stage_sql = ""
+    if stages is not None:
+        placeholders = ", ".join("?" for _ in stages)
+        stage_sql = f"a.stage IN ({placeholders}) AND "
+        params.extend(stages)
     if user_created_only:
         search_sql += (
-            "AND a.persona_key IS NULL "
+            "AND (a.persona_key IS NULL OR a.application_id LIKE 'APP-SYNTH-%') "
             "AND a.application_id NOT LIKE 'APP-HIST-%' "
-            "AND a.application_id NOT LIKE 'APP-CUSTOM-%' "
         )
     if search.strip():
         search_sql += "AND (c.name LIKE ? OR a.application_id LIKE ?) "
@@ -459,16 +501,17 @@ def get_human_review_cases(
         FROM cur_applications a
         JOIN cur_customers c ON c.customer_id = a.customer_id
         LEFT JOIN cur_decisions d ON d.application_id = a.application_id
-        WHERE a.stage IN ({placeholders})
+        WHERE {stage_sql}1 = 1
         {search_sql}
         ORDER BY CASE a.stage
                      WHEN 'Human Review' THEN 0
-                     WHEN 'Sanction' THEN 1
-                     WHEN 'Disbursed (simulated)' THEN 2
-                     WHEN 'Rejected' THEN 3
-                     WHEN 'Escalated' THEN 4
-                     WHEN 'Awaiting documents' THEN 5
-                     ELSE 6
+                     WHEN 'Approved' THEN 1
+                     WHEN 'Sanction' THEN 2
+                     WHEN 'Disbursed (simulated)' THEN 3
+                     WHEN 'Rejected' THEN 4
+                     WHEN 'Escalated' THEN 5
+                     WHEN 'Awaiting documents' THEN 6
+                     ELSE 7
                  END,
                  a.submitted_at ASC,
                  a.application_id
@@ -1108,6 +1151,7 @@ def create_intake_application(
     application_id: str | None = None,
     customer_id: str | None = None,
     owner: str = "",
+    verification_report: Mapping[str, Any] | None = None,
 ) -> str:
     """Atomically register a new synthetic applicant, case, evidence and audit event."""
     database = _store(store)
@@ -1231,26 +1275,90 @@ def create_intake_application(
             """,
             (application_id, json.dumps(kyc, sort_keys=True), now),
         )
-        connection.executemany(
-            """
-            INSERT INTO raw_documents
-                (doc_id, application_id, doc_type, file_name, file_path,
-                 text_content, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
+        document_rows = []
+        verification_rows = []
+        for document in documents:
+            doc_id = f"DOC-{uuid4().hex.upper()}"
+            document_rows.append(
                 (
-                    f"DOC-{uuid4().hex.upper()}",
+                    doc_id,
                     application_id,
                     document["doc_type"],
+                    document.get("category", document["doc_type"]),
                     document["file_name"],
                     document["file_path"],
                     document["text_content"],
                     now,
                 )
-                for document in documents
-            ],
+            )
+            verification = document.get("verification")
+            if verification:
+                verification_rows.append(
+                    (
+                        doc_id,
+                        application_id,
+                        str(verification.get("extraction_status", "Unavailable")),
+                        str(verification.get("extraction_method", "Unavailable")),
+                        json.dumps(
+                            verification.get("extracted_fields", {}),
+                            sort_keys=True,
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            verification.get("field_evidence", {}),
+                            sort_keys=True,
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            verification.get("checks", []),
+                            sort_keys=True,
+                            ensure_ascii=False,
+                        ),
+                        str(verification.get("ai_explanation", "")),
+                        str(verification.get("verification_status", "Unable to verify")),
+                        str(verification.get("explanation", "")),
+                        str(
+                            verification.get(
+                                "authenticity_status", "Not independently verified"
+                            )
+                        ),
+                    )
+                )
+        connection.executemany(
+            """
+            INSERT INTO raw_documents
+                (doc_id, application_id, doc_type, category, file_name, file_path,
+                 text_content, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            document_rows,
         )
+        connection.executemany(
+            """
+            INSERT INTO raw_document_verifications
+                (doc_id, application_id, extraction_status, extraction_method,
+                 extracted_fields_json, field_evidence_json, checks_json,
+                 ai_explanation, verification_status, explanation, authenticity_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            verification_rows,
+        )
+        if verification_report is not None:
+            connection.execute(
+                """
+                INSERT INTO raw_document_verification_reports
+                    (application_id, overall_status, report_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    application_id,
+                    str(verification_report.get("overall_status", "Incomplete")),
+                    json.dumps(
+                        dict(verification_report), sort_keys=True, ensure_ascii=False
+                    ),
+                    now,
+                ),
+            )
         connection.execute(
             """
             INSERT INTO cur_audit_log

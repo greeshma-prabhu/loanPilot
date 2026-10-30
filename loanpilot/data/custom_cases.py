@@ -47,7 +47,7 @@ def seed_custom_cases(
         application_id = str(row["application_id"])
         number = int(application_id.rsplit("-", 1)[1])
         data = dict(row["inputs"])
-        data["document_mode"] = "Generate synthetic documents from my entries"
+        data["document_mode"] = "Use synthetic demo documents"
         data.setdefault("document_problem", False)
         data.setdefault("problem_type", "Salary credits about 30% below the payslip")
         dob = date.fromisoformat(str(data["dob"]))

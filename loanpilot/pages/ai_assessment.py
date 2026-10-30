@@ -100,6 +100,10 @@ def _assessment_from_saved(application_id: str, store: SQLiteStore) -> dict[str,
             "anomaly_description": by_step[1]["result"].get(
                 "anomaly_description", ""
             ),
+            "document_verifications": by_step[1]["result"].get(
+                "document_verifications", []
+            ),
+            "document_report": by_step[1]["result"].get("document_report"),
         },
         "reconciliation": by_step[1]["result"].get("reconciliation", {}),
         "pricing": by_step[5]["result"].get("pricing", {}),
@@ -182,6 +186,14 @@ def _render_evidence(result: dict[str, Any]) -> None:
         st.info("No document fields were extracted.")
     st.markdown("**Document anomaly description**")
     st.write(result["extracted"].get("anomaly_description") or "Unavailable")
+    document_report = result["extracted"].get("document_report")
+    document_verifications = result["extracted"].get("document_verifications", [])
+    if document_report:
+        from loanpilot.components import render_document_verification_report
+
+        render_document_verification_report(
+            document_verifications, document_report
+        )
 
 
 def _render_policy(result: dict[str, Any]) -> None:
@@ -501,7 +513,8 @@ def render(store: SQLiteStore | None = None) -> None:
             application_ids,
             index=default_index,
             format_func=lambda application_id: (
-                str(applications.loc[applications.application_id == application_id, "applicant"].iloc[0])
+                f"{applications.loc[applications.application_id == application_id, 'applicant'].iloc[0]} "
+                f"· {application_id}"
             ),
             key="assessment_application_selector",
             on_change=_remember_selection,

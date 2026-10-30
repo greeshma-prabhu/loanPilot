@@ -22,6 +22,7 @@ from loanpilot.components import (
     calculate_foir,
     fmt_inr,
     render_decision_card,
+    render_document_verification_report,
     render_key_numbers,
     render_why,
     status_chip,
@@ -30,6 +31,8 @@ from loanpilot.data.queries import (
     get_agent_trace,
     get_application,
     get_documents,
+    get_document_verification_report,
+    get_document_verifications,
     get_disbursement,
     get_human_review_cases,
     get_sanction,
@@ -120,6 +123,7 @@ def _case_status(stage: str) -> tuple[str, str]:
     """Map persisted stages to short queue labels and accessible chip kinds."""
     return {
         "Human Review": ("Pending", "warning"),
+        "Approved": ("Approved", "success"),
         "Sanction": ("Approved", "success"),
         "Disbursed (simulated)": ("Disbursed (simulated)", "success"),
         "Rejected": ("Rejected", "danger"),
@@ -143,7 +147,9 @@ def _render_queue_filters(store: SQLiteStore) -> tuple[pd.DataFrame, str]:
         stages = all_cases["stage"].astype(str)
         counts = {
             "Pending": int((stages == "Human Review").sum()),
-            "Approved": int(stages.isin(("Sanction", "Disbursed (simulated)")).sum()),
+            "Approved": int(
+                stages.isin(("Approved", "Sanction", "Disbursed (simulated)")).sum()
+            ),
             "Rejected": int((stages == "Rejected").sum()),
             "All": len(all_cases),
         }
@@ -491,11 +497,17 @@ def _render_evidence_tabs(
         st.write(extraction.get("anomaly_description") or "No anomaly description recorded.")
         documents = get_documents(application_id, store)
         if not documents.empty:
-            st.caption("Registered synthetic documents")
+            st.caption("Registered documents")
             st.table(
-                documents[["doc_type", "file_name", "uploaded_at"]].rename(
-                    columns={"doc_type": "Type", "file_name": "File", "uploaded_at": "Uploaded"}
+                documents[["category", "file_name", "uploaded_at"]].rename(
+                    columns={"category": "Category", "file_name": "File", "uploaded_at": "Uploaded"}
                 )
+            )
+        document_report = get_document_verification_report(application_id, store)
+        if document_report:
+            render_document_verification_report(
+                get_document_verifications(application_id, store),
+                document_report,
             )
     with tabs[2]:
         st.subheader("Bureau and KYC")

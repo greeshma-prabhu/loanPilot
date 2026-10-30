@@ -256,7 +256,7 @@ def evaluate_policy(
     document_pass = all(
         reconciliation.get(key, False)
         for key in ("payslip_arithmetic_matches", "salary_credits_within_tolerance", "employer_matches")
-    )
+    ) and not reconciliation.get("document_failure", False)
     add(
         "CP-6.2",
         {
@@ -267,6 +267,12 @@ def evaluate_policy(
                 "salary_credit_variance_pct"
             ),
             "employer_matches": reconciliation.get("employer_matches", False),
+            "verification_status": reconciliation.get(
+                "document_verification_status", "Not assessed"
+            ),
+            "verification_explanation": reconciliation.get(
+                "document_verification_explanation", ""
+            ),
         },
         "pass" if document_pass else "refer",
         "low" if document_pass else "high",

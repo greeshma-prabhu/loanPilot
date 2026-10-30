@@ -3,6 +3,7 @@
 from datetime import date, datetime
 from difflib import SequenceMatcher
 from io import BytesIO
+import hashlib
 import json
 import logging
 import mimetypes
@@ -23,6 +24,12 @@ from loanpilot.data.queries import (
     get_application,
     list_intake_customers,
 )
+from loanpilot.data.document_verification import (
+    CATEGORIES as _UPLOAD_CATEGORIES,
+    analyze_uploads,
+    extract_pdf_text,
+    synthetic_verification_report,
+)
 from loanpilot.data.schema import create_schema
 from loanpilot.data.store import SQLiteStore
 from loanpilot.theme import render_disclaimer, render_header
@@ -38,7 +45,10 @@ _DOC_LABELS = {
     "payslip": "Payslip",
     "bank_statement_summary": "6-month bank statement summary",
     "kyc_sheet": "KYC sheet",
+    "employment_proof": "Employment proof",
 }
+_DEMO_DOCUMENT_TYPES = (*_DOC_TYPES, "employment_proof")
+_DOCUMENT_MODES = ("Use synthetic demo documents", "Upload my own documents")
 _PROBLEMS = (
     "Salary credits about 30% below the payslip",
     "Payslip arithmetic does not add up",
@@ -101,7 +111,7 @@ def _initial_intake() -> dict:
         "identity_mode": "Use demo identity",
         "identity_documents": {},
         "identity_sheet": None,
-        "document_mode": "Generate synthetic documents from my entries",
+        "document_mode": _DOCUMENT_MODES[0],
         "document_problem": False,
         "problem_type": _PROBLEMS[0],
         "uploads": {},
@@ -209,10 +219,19 @@ def _widget_values(step_kind: str) -> dict:
             "intake_widget_problem_type", saved["problem_type"]
         ),
     }
-    uploads = {}
-    if values["document_mode"] == "Upload my own PDFs":
-        for doc_type in _DOC_TYPES:
-            uploads[doc_type] = st.session_state.get(f"intake_upload_{doc_type}")
+    uploads = []
+    if _is_upload_mode(values["document_mode"]):
+        uploaded_files = st.session_state.get("intake_upload_pdfs") or []
+        for index, uploaded in enumerate(uploaded_files):
+            key = _upload_category_key(index, uploaded.name)
+            category_label = st.session_state.get(key, "Other supporting document")
+            uploads.append(
+                {
+                    "file_name": Path(uploaded.name.replace("\\", "/")).name,
+                    "content": bytes(uploaded.getvalue()),
+                    "category": _UPLOAD_CATEGORIES[category_label],
+                }
+            )
     values["uploads"] = uploads
     return values
 
@@ -220,6 +239,33 @@ def _widget_values(step_kind: str) -> dict:
 def _step_data(step_kind: str) -> dict:
     """Overlay current widget values on the saved intake for validation."""
     return {**_intake(), **_widget_values(step_kind)}
+
+
+def _is_upload_mode(mode: str) -> bool:
+    """Accept the previous persisted label while migrating intake session data."""
+    return mode in {_DOCUMENT_MODES[1], "Upload my own PDFs"}
+
+
+def _upload_category_key(index: int, filename: str) -> str:
+    """Keep uploaded category selectors stable across Streamlit reruns."""
+    digest = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:10]
+    return f"intake_upload_category_{index}_{digest}"
+
+
+def _upload_fingerprint(uploads: list[dict], applicant: dict | None = None) -> str:
+    """Identify the exact file bytes and categories used for a preview analysis."""
+    digest = hashlib.sha256()
+    if applicant:
+        for key in ("name", "employer", "income", "job_months"):
+            digest.update(str(applicant.get(key, "")).encode("utf-8"))
+            digest.update(b"\0")
+    for upload in uploads:
+        digest.update(str(upload.get("category", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(upload.get("file_name", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes(upload.get("content") or b""))
+    return digest.hexdigest()
 
 
 def _validate(data: dict, step_kind: str) -> str:
@@ -257,10 +303,6 @@ def _validate(data: dict, step_kind: str) -> str:
         if data["purpose"] not in _PURPOSES:
             return "Select a loan purpose."
     elif step_kind == "documents":
-        if data["document_mode"] == "Upload my own PDFs" and any(
-            data["uploads"].get(doc_type) is None for doc_type in _DOC_TYPES
-        ):
-            return "Upload a PDF for each required document."
         if not data["consent"] or not data["declaration"]:
             return "Both consent and declaration are required."
     return ""
@@ -612,9 +654,20 @@ def _document_texts(data: dict) -> dict[str, str]:
             [
                 "PERSONAL LOAN DEMO - KYC SUMMARY",
                 *common,
+                f"Date of birth: {data['dob']}",
                 f"Employer: {data['employer']}",
                 f"PAN demo identifier: {data['pan']}",
                 "PAN status: Pending synthetic check",
+            ]
+        ),
+        "employment_proof": "\n".join(
+            [
+                "PERSONAL LOAN DEMO - EMPLOYMENT PROOF",
+                *common,
+                f"Employee: {data['name']}",
+                f"Employer: {data['employer']}",
+                f"Employment type: {data['employment_type']}",
+                "Employment status: As declared in this demo application",
             ]
         ),
     }
@@ -622,47 +675,70 @@ def _document_texts(data: dict) -> dict[str, str]:
 
 def _extract_pdf_text(content: bytes) -> tuple[str, str | None]:
     """Extract PDF text and return a visible flag instead of raising."""
-    try:
-        from pypdf import PdfReader
-        from pypdf.errors import PdfReadError, PdfStreamError
-    except ImportError:
-        return "", "PDF text extraction is unavailable (pypdf is not installed)."
-    try:
-        text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages).strip()
-    except (OSError, ValueError, TypeError, PdfReadError, PdfStreamError) as error:
-        return "", f"PDF could not be read: {type(error).__name__}"
-    return (text, None) if text else ("", "PDF contains no extractable text.")
+    text, status, message = extract_pdf_text(bytes(content))
+    return (text, None) if status.startswith("Readable") else ("", message)
 
 
-def _save_documents(application_id: str, data: dict) -> list[dict[str, str]]:
+def _save_documents(
+    application_id: str,
+    data: dict,
+    analyzed_uploads: list[dict] | None = None,
+) -> list[dict]:
     """Generate or register uploaded PDFs beneath the configured project root."""
     folder = config.DOCUMENTS_DIR / application_id
     folder.mkdir(parents=True, exist_ok=True)
-    texts = _document_texts(data)
     documents = []
-    for doc_type in _DOC_TYPES:
+    if _is_upload_mode(data["document_mode"]):
+        for index, result in enumerate(analyzed_uploads or []):
+            filename = Path(result["file_name"].replace("\\", "/")).name
+            safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+            stored_name = f"{index + 1:02d}-{safe_filename or 'document.pdf'}"
+            target = folder / stored_name
+            target.write_bytes(bytes(result["content"]))
+            verification = {
+                key: result[key]
+                for key in (
+                    "extraction_status",
+                    "extraction_method",
+                    "extracted_fields",
+                    "field_evidence",
+                    "checks",
+                    "ai_explanation",
+                    "verification_status",
+                    "explanation",
+                    "authenticity_status",
+                )
+            }
+            documents.append(
+                {
+                    "doc_type": result["doc_type"],
+                    "category": result["category"],
+                    "file_name": filename,
+                    "file_path": target.relative_to(config.PROJECT_ROOT).as_posix(),
+                    "text_content": result["text_content"],
+                    "verification": verification,
+                }
+            )
+        return documents
+
+    texts = _document_texts(data)
+    for doc_type in _DEMO_DOCUMENT_TYPES:
         filename = f"{doc_type}.pdf"
-        if data["document_mode"] == "Upload my own PDFs":
-            uploaded = data["uploads"].get(doc_type)
-            content = uploaded.getvalue() if uploaded is not None else b""
-            filename = Path(uploaded.name.replace("\\", "/")).name if uploaded else filename
-            text, flag = _extract_pdf_text(content)
-            if flag:
-                text = f"[DOCUMENT FLAG: {flag}]"
-        else:
-            text = texts[doc_type]
-            title = _DOC_LABELS[doc_type]
-            lines = text.splitlines()
-            content = _pdf_bytes(title, lines)
-            target = folder / filename
-            target.write_bytes(content)
-        if data["document_mode"] == "Upload my own PDFs":
-            (folder / f"{doc_type}.pdf").write_bytes(content)
+        text = texts[doc_type]
+        content = _pdf_bytes(_DOC_LABELS[doc_type], text.splitlines())
+        target = folder / filename
+        target.write_bytes(content)
         documents.append(
             {
                 "doc_type": doc_type,
+                "category": {
+                    "payslip": "payslip",
+                    "bank_statement_summary": "bank_statement_summary",
+                    "kyc_sheet": "identity_proof",
+                    "employment_proof": "employment_proof",
+                }[doc_type],
                 "file_name": filename,
-                "file_path": (folder / f"{doc_type}.pdf").relative_to(config.PROJECT_ROOT).as_posix(),
+                "file_path": target.relative_to(config.PROJECT_ROOT).as_posix(),
                 "text_content": text,
             }
         )
@@ -682,6 +758,7 @@ def _save_identity_documents(application_id: str, data: dict) -> list[dict[str, 
         records.append(
             {
                 "doc_type": "identity_sheet",
+                "category": "identity_proof",
                 "file_name": path.name,
                 "file_path": path.relative_to(config.PROJECT_ROOT).as_posix(),
                 "text_content": identity_sheet["text"],
@@ -704,6 +781,7 @@ def _save_identity_documents(application_id: str, data: dict) -> list[dict[str, 
         records.append(
             {
                 "doc_type": doc_type,
+                "category": "identity_proof",
                 "file_name": Path(document["name"]).name,
                 "file_path": path.relative_to(config.PROJECT_ROOT).as_posix(),
                 "text_content": text_content,
@@ -736,7 +814,7 @@ def _permanent_case_entry(data: dict, application_id: str) -> None:
             "permanent",
         }
     }
-    saved["document_mode"] = "Generate synthetic documents from my entries"
+    saved["document_mode"] = _DOCUMENT_MODES[0]
     entries.append({"application_id": application_id, "inputs": saved})
     path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -837,6 +915,10 @@ def _apply_identity_problem(data: dict) -> None:
 
 def _submit_application(store: SQLiteStore) -> None:
     """Validate canonical state, persist the case and show post-submit actions."""
+    existing_id = st.session_state.get("intake_application_id")
+    if existing_id and not get_application(str(existing_id), store).empty:
+        return
+    st.session_state.pop("intake_application_id", None)
     data = _intake()
     data.update(_widget_values("documents"))
     error = _validate(data, "documents")
@@ -861,7 +943,31 @@ def _submit_application(store: SQLiteStore) -> None:
         else f"APP-NEW-{uuid.uuid4().hex[:12].upper()}"
     )
     try:
-        documents = _save_documents(application_id, data)
+        if _is_upload_mode(data["document_mode"]):
+            fingerprint = _upload_fingerprint(data["uploads"], data)
+            cached_analysis = data.get("document_analysis") or {}
+            if cached_analysis.get("fingerprint") == fingerprint:
+                analyzed_uploads = cached_analysis["documents"]
+                verification_report = cached_analysis["report"]
+            else:
+                analyzed_uploads, verification_report = analyze_uploads(
+                    data["uploads"],
+                    {
+                        "name": data["name"],
+                        "employer": data["employer"],
+                        "income": data["income"],
+                        "job_months": data["job_months"],
+                    },
+                )
+                data["document_analysis"] = {
+                    "fingerprint": fingerprint,
+                    "documents": analyzed_uploads,
+                    "report": verification_report,
+                }
+            documents = _save_documents(application_id, data, analyzed_uploads)
+        else:
+            documents = _save_documents(application_id, data)
+            verification_report = synthetic_verification_report(documents)
         documents.extend(_save_identity_documents(application_id, data))
     except (OSError, ValueError) as error:
         st.session_state["intake_error"] = str(error)
@@ -918,10 +1024,16 @@ def _submit_application(store: SQLiteStore) -> None:
     }
     try:
         application_id = create_intake_application(
-            applicant, application, bureau, kyc, documents, store,
+            applicant,
+            application,
+            bureau,
+            kyc,
+            documents,
+            store,
             application_id=application_id,
             customer_id=data.get("customer_id"),
             owner=str(st.session_state.get("auth", {}).get("name", "")),
+            verification_report=verification_report,
         )
         if data["permanent"]:
             _permanent_case_entry(data, application_id)
@@ -1146,18 +1258,62 @@ def _render_loan(data: dict) -> None:
         st.metric("Indicative EMI", fmt_inr(emi), help=f"Illustrative grid rate: {rate:.2%} p.a.")
 
 
+def _set_document_mode(mode: str) -> None:
+    """Keep the selected document workflow in canonical intake state."""
+    st.session_state["intake_widget_document_mode"] = mode
+    st.session_state["intake"] = {**_intake(), "document_mode": mode}
+    st.session_state.pop("intake_error", None)
+
+
+def _render_upload_report(documents: list[dict], report: dict) -> None:
+    """Render a concise verification report for the current unsubmitted intake."""
+    from loanpilot.components import render_document_verification_report
+
+    render_document_verification_report(documents, report)
+
+
 def _render_document_step(data: dict) -> None:
-    """Render generated/uploaded documents, full summary and declarations."""
-    st.radio(
-        "Document option",
-        ("Generate synthetic documents from my entries", "Upload my own PDFs"),
-        index=0 if data["document_mode"].startswith("Generate") else 1,
-        key="intake_widget_document_mode",
-        on_change=_sync_intake_widget,
-        args=("document_mode", "intake_widget_document_mode"),
-    )
+    """Render two document workflows, document preview/report, and declarations."""
+    current_mode = data.get("document_mode", _DOCUMENT_MODES[0])
+    if current_mode == "Generate synthetic documents from my entries":
+        current_mode = _DOCUMENT_MODES[0]
+    elif current_mode == "Upload my own PDFs":
+        current_mode = _DOCUMENT_MODES[1]
+    st.session_state.setdefault("intake_widget_document_mode", current_mode)
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("#### Use synthetic demo documents")
+            st.caption(
+                "Generate sample documents automatically using the applicant "
+                "information entered in this application."
+            )
+            st.button(
+                "Use synthetic demo documents",
+                key="intake_select_demo_documents",
+                type="primary" if current_mode == _DOCUMENT_MODES[0] else "secondary",
+                on_click=_set_document_mode,
+                args=(_DOCUMENT_MODES[0],),
+                width="stretch",
+            )
+    with right:
+        with st.container(border=True):
+            st.markdown("#### Upload my own documents")
+            st.caption(
+                "Upload PDF documents and let LoanPilot extract, understand and "
+                "compare their information using AI."
+            )
+            st.button(
+                "Upload my own documents",
+                key="intake_select_upload_documents",
+                type="primary" if current_mode == _DOCUMENT_MODES[1] else "secondary",
+                on_click=_set_document_mode,
+                args=(_DOCUMENT_MODES[1],),
+                width="stretch",
+            )
+
     mode = st.session_state["intake_widget_document_mode"]
-    generated_documents = mode.startswith("Generate")
+    generated_documents = not _is_upload_mode(mode)
     if "intake_widget_document_problem" not in st.session_state:
         st.session_state["intake_widget_document_problem"] = bool(
             data["document_problem"]
@@ -1176,7 +1332,7 @@ def _render_document_step(data: dict) -> None:
             st.session_state["intake_widget_document_problem"]
         ),
     }
-    if mode.startswith("Generate"):
+    if generated_documents:
         if st.session_state["intake_widget_document_problem"]:
             if "intake_widget_problem_type" not in st.session_state:
                 st.session_state["intake_widget_problem_type"] = data["problem_type"]
@@ -1188,17 +1344,91 @@ def _render_document_step(data: dict) -> None:
                 on_change=_sync_intake_widget,
                 args=("problem_type", "intake_widget_problem_type"),
             )
-        st.caption("The three PDFs are watermarked SYNTHETIC SAMPLE, DEMO ONLY.")
+        st.info("Generated files are watermarked SYNTHETIC / DEMO ONLY and are not real evidence.")
+        demo_texts = _document_texts(data)
+        download_columns = st.columns(2)
+        for index, doc_type in enumerate(_DEMO_DOCUMENT_TYPES):
+            pdf_bytes = _pdf_bytes(
+                _DOC_LABELS[doc_type], demo_texts[doc_type].splitlines()
+            )
+            with download_columns[index % 2]:
+                st.download_button(
+                    f"Download {_DOC_LABELS[doc_type]}",
+                    pdf_bytes,
+                    file_name=f"{doc_type}.pdf",
+                    mime="application/pdf",
+                    key=f"intake_download_{doc_type}",
+                    width="stretch",
+                )
+        st.caption("Generated: identity proof · salary slip · bank statement · employment proof.")
     else:
         st.session_state.setdefault("intake_widget_document_problem", False)
         st.session_state.setdefault("intake_widget_problem_type", _PROBLEMS[0])
-        for doc_type in _DOC_TYPES:
-            st.file_uploader(
-                f"{_DOC_LABELS[doc_type]} PDF *",
-                type=["pdf"],
-                key=f"intake_upload_{doc_type}",
+        st.caption("PDF only · maximum 10 MB per file. Required categories: identity, salary slip, and bank statement.")
+        st.markdown("**Upload → Extract → Understand → Compare → Verification report**")
+        uploaded_files = st.file_uploader(
+            "Upload multiple PDF documents",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="intake_upload_pdfs",
+            help="Files are copied before parsing and stored with this case after submission.",
+        ) or []
+        for index, uploaded in enumerate(uploaded_files):
+            col_name, col_category = st.columns([2, 1])
+            with col_name:
+                st.caption(uploaded.name)
+            with col_category:
+                st.selectbox(
+                    f"Category for {uploaded.name}",
+                    tuple(_UPLOAD_CATEGORIES),
+                    index=tuple(_UPLOAD_CATEGORIES).index(
+                        "Other supporting document"
+                    ),
+                    key=_upload_category_key(index, uploaded.name),
+                    label_visibility="collapsed",
+                )
+        analyze_column, status_column = st.columns([1, 2])
+        with analyze_column:
+            analyze_clicked = st.button(
+                "Analyze documents",
+                key="intake_analyze_documents",
+                help="Extract PDF text and compare explicitly stated values with this application.",
             )
-        st.caption("Unreadable PDFs are registered with a document flag.")
+        if analyze_clicked:
+            try:
+                upload_data = _widget_values("documents")["uploads"]
+                analyzed_documents, report = analyze_uploads(
+                    upload_data,
+                    {
+                        "name": data["name"],
+                        "employer": data["employer"],
+                        "income": data["income"],
+                        "job_months": data["job_months"],
+                    },
+                )
+                analysis = {
+                    "fingerprint": _upload_fingerprint(upload_data, data),
+                    "documents": analyzed_documents,
+                    "report": report,
+                }
+                st.session_state["intake"] = {
+                    **_intake(),
+                    "document_analysis": analysis,
+                }
+                st.session_state.pop("intake_error", None)
+            except (OSError, ValueError) as error:
+                st.session_state["intake_error"] = str(error)
+        with status_column:
+            st.caption("Issuer authenticity is not independently verified.")
+        upload_data = _widget_values("documents")["uploads"]
+        analysis = _intake().get("document_analysis") or {}
+        fingerprint = _upload_fingerprint(upload_data, data)
+        if analysis.get("fingerprint") == fingerprint:
+            _render_upload_report(analysis.get("documents", []), analysis["report"])
+        elif upload_data:
+            st.info("Select categories, then analyze the current files to see the verification report.")
+        else:
+            st.info("No PDFs uploaded. Missing required documents will be reported; you may still continue to assessment.")
 
     summary = [
         ("Applicant", data["name"]),

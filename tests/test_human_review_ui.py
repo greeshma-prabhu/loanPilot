@@ -10,9 +10,12 @@ from loanpilot.data.queries import (
     create_intake_application,
     get_application,
     get_audit_log,
+    get_human_review_cases,
     get_review_queue,
     record_human_decision,
 )
+from loanpilot.data.demo_seed import seed_synthetic_applications
+from loanpilot.data.schema import create_schema
 from loanpilot.data.seed import seed_demo_data
 from loanpilot.data.store import SQLiteStore
 from loanpilot.pages import human_review
@@ -106,6 +109,35 @@ def _app(store: SQLiteStore) -> AppTest:
         "from loanpilot.data.store import SQLiteStore\n"
         f"render(SQLiteStore({str(store.path)!r}))\n"
     )
+
+
+def test_review_filters_include_seeded_and_unassessed_operational_cases(
+    tmp_path, monkeypatch, create_user_case
+) -> None:
+    """All includes unassessed and synthetic cases; Pending means human review."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    store = SQLiteStore(tmp_path / "review-seeded.db")
+    create_schema(store)
+    seed_synthetic_applications(store)
+    new_id = create_user_case(store, "APP-NEW-UNASSESSED", "Unassessed Applicant")
+
+    all_cases = get_human_review_cases("All", store=store, user_created_only=True)
+    assert len(all_cases) == 11
+    assert new_id in set(all_cases["application_id"])
+    assert len(
+        get_human_review_cases("Pending", store=store, user_created_only=True)
+    ) == 4
+    assert len(
+        get_human_review_cases("Approved", store=store, user_created_only=True)
+    ) == 1
+    assert len(
+        get_human_review_cases("Rejected", store=store, user_created_only=True)
+    ) == 1
+
+    run_assessment(new_id, store)
+    pending = get_human_review_cases("Pending", store=store, user_created_only=True)
+    assert len(pending) == 5
+    assert new_id in set(pending["application_id"])
 
 
 def test_signed_in_user_is_the_read_only_reviewer(assessed_pair) -> None:

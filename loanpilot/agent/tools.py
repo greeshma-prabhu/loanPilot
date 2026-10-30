@@ -14,6 +14,8 @@ from loanpilot.data.queries import (
     get_application,
     get_bureau,
     get_customer,
+    get_document_verification_report,
+    get_document_verifications,
     get_documents,
     get_existing_loans,
     get_kyc,
@@ -102,6 +104,10 @@ def get_features(application_id: str, store: SQLiteStore) -> dict[str, Any]:
     application = application_rows.iloc[0].to_dict()
     customer = get_customer(application["customer_id"], store).iloc[0].to_dict()
     documents = get_documents(application_id, store).to_dict("records")
+    document_verifications = get_document_verifications(application_id, store)
+    document_verification_report = get_document_verification_report(
+        application_id, store
+    )
     transactions = get_transactions(application["customer_id"], store).to_dict("records")
     loans = get_existing_loans(application["customer_id"], store).to_dict("records")
     repayment = get_repayment_summary(application["customer_id"], store).iloc[0].to_dict()
@@ -109,6 +115,8 @@ def get_features(application_id: str, store: SQLiteStore) -> dict[str, Any]:
         "application": application,
         "customer": customer,
         "documents": documents,
+        "document_verifications": document_verifications,
+        "document_verification_report": document_verification_report,
         "transactions": transactions,
         "loans": loans,
         "repayment": repayment,
@@ -167,17 +175,41 @@ def extract_document_fields(
         key: _snippet(documents, pattern)
         for key, pattern in evidence_patterns.items()
     }
+    persisted_evidence_fields = {
+        "gross": "gross_salary",
+        "deductions": "deductions",
+        "net": "net_salary",
+        "employer": "employer_name",
+        "salary_credits_avg": "average_monthly_salary_credits",
+    }
+    for verification in features.get("document_verifications", []):
+        source_fields = verification.get("extracted_fields", {})
+        for field, source_field in persisted_evidence_fields.items():
+            value = source_fields.get(source_field)
+            if value is not None:
+                fields[field] = value
+                snippet = verification.get("field_evidence", {}).get(source_field)
+                if snippet:
+                    evidence[field] = {
+                        "source_document": verification.get("file_name", "Uploaded PDF"),
+                        "snippet": snippet,
+                    }
     anomalies = (
         output.get("anomaly_description")
         if llm_valid and isinstance(output, dict)
         else None
     )
+    report = features.get("document_verification_report")
+    if report:
+        anomalies = str(report.get("explanation") or anomalies)
     if not anomalies:
         anomalies = "Anomaly description is unavailable; see deterministic reconciliation results."
     return {
         "fields": fields,
         "evidence": evidence,
         "anomaly_description": str(anomalies),
+        "document_verifications": features.get("document_verifications", []),
+        "document_report": report,
         "extraction_method": (
             "Gemini JSON"
             if source_matches and mode == LIVE_MODE
@@ -217,6 +249,13 @@ def reconcile_documents(
     employer_matches = _normalize_employer(employer_document) == _normalize_employer(
         employer_record
     )
+    report = features.get("document_verification_report") or {}
+    verification_status = str(report.get("overall_status", ""))
+    manual_document_review = verification_status in {
+        "Needs manual review",
+        "Incomplete",
+        "Partially verified",
+    }
     return {
         "payslip_arithmetic_matches": arithmetic_matches,
         "salary_credits_within_tolerance": salary_within_tolerance,
@@ -226,9 +265,10 @@ def reconcile_documents(
         "salary_credits_avg": salary_average,
         "employer_on_document": employer_document,
         "employer_on_record": employer_record,
-        "document_failure": not (
-            arithmetic_matches and salary_within_tolerance and employer_matches
-        ),
+        "document_failure": manual_document_review
+        or not (arithmetic_matches and salary_within_tolerance and employer_matches),
+        "document_verification_status": verification_status or "Not assessed",
+        "document_verification_explanation": report.get("explanation", ""),
     }
 
 

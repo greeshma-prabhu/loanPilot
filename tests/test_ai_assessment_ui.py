@@ -88,3 +88,24 @@ def test_unassessed_user_case_shows_run_assessment_state(
     assert any(item.value == "Assessment not run yet" for item in app.subheader)
     assert sum(button.label == "Run assessment" for button in app.button) == 1
     assert get_application(application_id, store).iloc[0]["ai_recommendation"] is None
+
+
+def test_permanent_intake_case_is_assessable_and_saved_to_the_same_case(
+    tmp_path, monkeypatch, create_user_case
+) -> None:
+    """Permanent cases remain available to assessment and use their persisted ID."""
+    monkeypatch.setattr("loanpilot.agent.llm._api_key", lambda: None)
+    store = SQLiteStore(tmp_path / "permanent-assessment.db")
+    seed_demo_data(store, reset=True)
+    application_id = create_user_case(
+        store, "APP-CUSTOM-1", "Permanent Assessment Applicant"
+    )
+
+    app = _app(store, application_id).run()
+    assert not app.exception
+    assert app.selectbox(key="assessment_application_selector").value == application_id
+    app.button(key="run_assessment").click().run()
+
+    saved = get_application(application_id, store).iloc[0]
+    assert saved["ai_recommendation"] in {"Approve", "Refer", "Decline"}
+    assert saved["stage"] == "Human Review"
